@@ -6,7 +6,7 @@
 #define STEPPER_DDR GPIOC_PDDR
 // Pin 9  is stepper disable
 // Pin 10 is direction
-// Pin 11 is step
+// Pin 13 is step
 #define DISABLE_CTRL PORTC_PCR3
 #define DISABLE_BIT  (1<<3)
 #define DIR_CTRL PORTC_PCR4

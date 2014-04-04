@@ -23,6 +23,8 @@ volatile stepper_state_t st;
 volatile uint32_t out_step;
 volatile uint32_t out_dir;
 
+volatile int32_t steps_to_go = -1;
+
 // Reset all stepper parameters, setup clocks, and make sure
 // there is no power to steppers.
 void initialize_stepper_state(void){
@@ -68,7 +70,6 @@ uint32_t config_step_timer(uint32_t cycles)
 
 void set_step_events_per_minute(uint32_t steps_per_minute) 
 {
-  uint32_t cycles;
   if (steps_per_minute < 1){//MINIMUM_STEPS_PER_MINUTE){
     steps_per_minute = 1;//MINIMUM_STEPS_PER_MINUTE;
   }
@@ -76,14 +77,14 @@ void set_step_events_per_minute(uint32_t steps_per_minute)
   // 1) waiting too long because we reset the timer just before it triggered
   // 2) waiting too long because the new steps_per_minute is high but the current one is very low and we didn't reset.
   // so, if the new timer value is less than the current remaining time, we'll restart the timer.
-  cycles = (F_CPU*((uint32_t)60))/steps_per_minute;  
-  // set this as the new value to be implemented on the next interrupt
-  st.new_cycles_per_step_event = cycles;
   
-  if (cycles < PIT_CVAL0)
+  // set this as the new value to be implemented on the next interrupt
+  st.new_cycles_per_step_event = (F_CPU*((uint32_t)60))/steps_per_minute;
+  
+  if (st.new_cycles_per_step_event < PIT_CVAL0)
   {
     // reset the timer to count down from the new value.
-    st.cycles_per_step_event = config_step_timer(cycles);
+    st.cycles_per_step_event = config_step_timer(st.new_cycles_per_step_event);
   }
 }
 
@@ -102,21 +103,46 @@ bool get_direction(void)
 	return out_dir > 0;
 }
 
+// Limit the move to a set number of steps.
+void set_steps_to_go(int32_t steps)
+{
+  if(steps < 0)
+    steps = -1;
+  steps_to_go = steps;
+}
+
+int32_t get_steps_to_go(void)
+{
+  return steps_to_go;
+}
 
 void pit0_isr(void) {
   // Set the direction bits. Todo: only do this at the start of a block.
   STEPPER_PORT(DOR) = (STEPPER_PORT(DOR) & ~DIR_BIT) | (out_dir ? DIR_BIT : 0);
-  if(out_step)
-    trigger_pulse();
+  // fire a step
+  trigger_pulse();
 
+  // are we out of steps on a steps-limited move?
+  if(--steps_to_go == 0)
+  {
+    st.state = STATE_IDLE;  // disable the timer
+    steps_to_go = -1; // disable the step counter
+  }
+  // are we close? (if so, slow down to safe speed)
+  if(steps_to_go > 0 && steps_to_go < 30)
+    set_step_events_per_minute(max(get_step_events_per_minute() - 400, MINIMUM_STEPS_PER_MINUTE));
+  
   if(st.state == STATE_IDLE || st.state == STATE_ERROR){
     // Disable this interrupt
     PIT_TCTRL0 &= ~TEN;
     PIT_TFLG0 = 1;
     return;
   }
-   
+  // clear the interrupt flag
   PIT_TFLG0 = 1;
+  
+  
+  
   // load new cycle count
   st.cycles_per_step_event = config_step_timer(st.new_cycles_per_step_event);
 } 
@@ -159,7 +185,7 @@ void execute_move(void){
 
 // Immediately kill all motion, probably killing position due to deceleration
 void stop_motion(void){
-  disable_stepper();
+  //disable_stepper();
   PIT_TCTRL0 &= ~TEN;
 }
 

@@ -48,7 +48,8 @@
 
 typedef enum {
   SS_IDLE,
-  SS_FIXED,
+  SS_FIXED_SPEED,
+  SS_MOVE_STEPS,
   SS_PID_CTRL
 } sys_state_e;
 
@@ -60,6 +61,7 @@ extern volatile uint32_t systick_millis_count;    // system millisecond timer
 static char message[100] = "Hello, World";
 sys_state_e sysstate = SS_IDLE;
 uint32_t show_encoder_time = 0;
+bool moving = false;
 
 
 // Function Predeclares ======================================================
@@ -80,6 +82,10 @@ int main()
   reset_hardware();
   initialize_stepper_state();
   QEI_Init();
+  // enable motor and wait for a bit for the coils to stabilize
+  enable_stepper();
+  delay(100);
+  set_enc_value(0);   // zero out the encoder
   while(1){
 		// are there serial bytes to read?
 		if(usb_serial_available() > 0)
@@ -92,6 +98,14 @@ int main()
       next_encoder_time = systick_millis_count + show_encoder_time;
       sprintf(message, "%li--%lu--%lu\n", get_enc_value(), isr1_count, isr2_count);
       usb_serial_write(message,strlen(message));
+    }
+    
+    if(SS_MOVE_STEPS == sysstate && get_steps_to_go() == -1 && moving)
+    {
+      // done with move!
+      sprintf(message, "Move complete. New step position = %li; Encoder position = %li\n", (long)get_position(), (long)get_enc_value());
+      usb_serial_write(message,strlen(message));
+      moving = false;
     }
   }
 }
@@ -106,6 +120,9 @@ void parse_usb(void)
   uint32_t i;
   
   count = usb_serial_read(buf, min(usb_serial_available(), 100));
+  // packets are not null-terminated!
+  if(count < 100)
+    buf[count] = '\0';
   for(i = 0; i < count; i++)
   {
     switch(buf[i++])
@@ -114,9 +131,14 @@ void parse_usb(void)
       // idle state
       sysstate = SS_IDLE;
       stop_motion();
+      set_steps_to_go(-1);
+      moving = false;
+      
+      sprintf(message, "Idle mode\n");
+      usb_serial_write(message, strlen(message));
       break;
     case 'f':
-      sysstate = SS_FIXED;
+      sysstate = SS_FIXED_SPEED;
       // try to read a step frequency
       if(sscanf(buf + i, " %li%n", (long *)&foo, &read))
       {
@@ -124,8 +146,37 @@ void parse_usb(void)
         set_direction(foo > 0);
         set_step_events_per_minute((uint32_t)abs(foo));
       }
-      sprintf(message, "Fixed mode. Rate: %li\n", (long)(get_direction() ? 1 : -1) * get_step_events_per_minute());
+      sprintf(message, "Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
       usb_serial_write(message, strlen(message));
+      enable_stepper();
+      set_steps_to_go(-1);
+      execute_move();
+      moving = true;
+      break;
+    case 'm':
+      // move a specified number of steps.
+      // try to read a number of steps to go.
+      if(sscanf(buf + i, " %li%n", (long *)&foo, &read))
+      {
+        i += read;
+        set_direction(foo > 0);
+        set_step_events_per_minute(10000);
+        set_steps_to_go(abs(foo));
+        
+        sysstate = SS_MOVE_STEPS;
+        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_enc_value());
+        usb_serial_write(message, strlen(message));
+        enable_stepper();
+        execute_move();
+        moving = true;
+      }
+      else
+      {
+        sprintf(message, "Couldn't parse a distance to move!\n");
+        usb_serial_write(message, strlen(message));
+        sysstate = SS_IDLE;
+        moving = false;
+      }
       break;
     case 'p':
       // this will be pid control mode
@@ -144,13 +195,26 @@ void parse_usb(void)
       // try to read a new step frequency or target location given previous state
       switch(sysstate)
       {
-      case SS_FIXED:
+      case SS_FIXED_SPEED:
         // try to read a step frequency
         if(sscanf(buf + i, " %li%n", (long *)&foo, &read))
         {
           i += read;
           set_direction(foo > 0);
           set_step_events_per_minute((uint32_t)abs(foo));
+        }
+        break;
+      case SS_MOVE_STEPS:
+        // try to read a new move target
+        if(sscanf(buf + i, " %li%n", (long *)&foo, &read))
+        {
+          i += read;
+          set_direction((foo) > 0);
+          set_steps_to_go((uint32_t)abs(foo));
+          sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_enc_value());
+          usb_serial_write(message, strlen(message));
+          execute_move();
+          moving = true;
         }
         break;
       }
@@ -176,7 +240,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   case 'f':
     // current move frequency
-    sprintf(message, "Move Freq: %li\n", (long)(get_direction() ? 1 : -1) * get_step_events_per_minute());
+    sprintf(message, "Move Freq: %li\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
     usb_serial_write(message, strlen(message));
     break;
   case 'o':
@@ -186,7 +250,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   default :
     // didn't understand!
-    sprintf(message, "I didn't understand which parameter you want to query.");
+    sprintf(message, "I didn't understand which parameter you want to query.\n");
     usb_serial_write(message, strlen(message));
   }
 }
@@ -241,13 +305,14 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   case 'f':
     // current move frequency
-    if(SS_FIXED == sysstate)
+    if(SS_FIXED_SPEED == sysstate || SS_MOVE_STEPS == sysstate)
     {
       // try to read a step frequency
       if(sscanf(buf + *i, " %li%n", (long *)&foo, &read))
       {
         *i += read;
-        set_direction(foo > 0);
+        if(SS_FIXED_SPEED == sysstate)
+          set_direction(foo > 0);
         set_step_events_per_minute((uint32_t)abs(foo));
       }
       else
@@ -258,13 +323,13 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     }
     else
     {
-      sprintf(message, "Cannot set step frequency when not in Fixed Step mode!\n");
+      sprintf(message, "Cannot set step frequency when not in Fixed Step mode or Move Steps mode!\n");
       usb_serial_write(message, strlen(message));
     }
     break;
   default :
     // didn't understand!
-    sprintf(message, "I didn't understand which parameter you want to query.");
+    sprintf(message, "I didn't understand which parameter you want to query.\n");
     usb_serial_write(message, strlen(message));
   }
 }
