@@ -8,8 +8,14 @@
  *
  * Pinnout: This code is developed against a Teensy 3.1 MK20DX256 chip.
  *  PB18, PB19 <--> 32, 25 - quadrature inputs
- *  PC2 <-->23 - encoder index (neither used nor tested)
- *  The motor interface is described in in hardware.h
+ *  PC2 <--> 23 - encoder index (neither used nor tested)
+ *  SPI interface for SPI-reading encoder:
+ *    PC4 <--> 10 - CS
+ *    PC6 <--> 11 - DOUT
+ *    PC7 <--> 12 - DIN
+ *    PC5 <--> 13 - SCK
+ *  The motor interface is described in in hardware.h. NOTE that to accommodate SPI interface
+ *  to the sensor, pinnouts for the motor driver have changed!
  *
  * Usage: The device enumerates as a USB serial adapter. The following commands are supported
  *  Mode commands:
@@ -85,7 +91,7 @@ int main()
   // enable motor and wait for a bit for the coils to stabilize
   enable_stepper();
   delay(100);
-  set_enc_value(0);   // zero out the encoder
+  set_qenc_value(0);   // zero out the encoder
   while(1){
 		// are there serial bytes to read?
 		if(usb_serial_available() > 0)
@@ -96,14 +102,14 @@ int main()
     if(show_encoder_time > 0 && systick_millis_count > next_encoder_time)
 		{
       next_encoder_time = systick_millis_count + show_encoder_time;
-      sprintf(message, "%li--%lu--%lu\n", get_enc_value(), isr1_count, isr2_count);
+      sprintf(message, "%li--%lu--%lu\n", get_qenc_value(), isr1_count, isr2_count);
       usb_serial_write(message,strlen(message));
     }
     
     if(SS_MOVE_STEPS == sysstate && get_steps_to_go() == -1 && moving)
     {
       // done with move!
-      sprintf(message, "Move complete. New step position = %li; Encoder position = %li\n", (long)get_position(), (long)get_enc_value());
+      sprintf(message, "Move complete. New step position = %li; Encoder position = %li\n", (long)get_position(), (long)get_qenc_value());
       usb_serial_write(message,strlen(message));
       moving = false;
     }
@@ -164,7 +170,7 @@ void parse_usb(void)
         set_steps_to_go(abs(foo));
         
         sysstate = SS_MOVE_STEPS;
-        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_enc_value());
+        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_qenc_value());
         usb_serial_write(message, strlen(message));
         enable_stepper();
         execute_move();
@@ -211,7 +217,7 @@ void parse_usb(void)
           i += read;
           set_direction((foo) > 0);
           set_steps_to_go((uint32_t)abs(foo));
-          sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_enc_value());
+          sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_qenc_value());
           usb_serial_write(message, strlen(message));
           execute_move();
           moving = true;
@@ -230,7 +236,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
   {
   case 't':
     // encoder tic count
-    sprintf(message, "Encoder Tic Count: %li\n", (long)get_enc_value());
+    sprintf(message, "Encoder Tic Count: %li\n", (long)get_qenc_value());
     usb_serial_write(message, strlen(message));
     break;
   case 'm':
@@ -268,7 +274,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     if(sscanf(buf + *i, " %li%n", (long *)&foo, &read))
     {
       *i += read;
-      set_enc_value(foo);
+      set_qenc_value(foo);
     }
     else
     {

@@ -177,16 +177,16 @@ void cpm1_isr(void)
 }
 
 
-// get_enc_value()
+// get_qenc_value()
 // returns the current encoder tic index
-int32_t get_enc_value(void)
+int32_t get_qenc_value(void)
 {
   return (int32_t)FTM2_CNT + encoder_offset;
 }
 
-// set_enc_value()
+// set_qenc_value()
 // sets the current encoder tic index (by offsetting the current value)
-void set_enc_value(int32_t newvalue)
+void set_qenc_value(int32_t newvalue)
 {
   encoder_offset = newvalue - (int32_t)FTM2_CNT;
 }

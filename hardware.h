@@ -5,14 +5,14 @@
 #define STEPPER_PORT(reg) GPIOC_P##reg
 #define STEPPER_DDR GPIOC_PDDR
 // Pin 9  is stepper disable
-// Pin 10 is direction
-// Pin 13 is step
+// Pin 22 is direction
+// Pin 15 is step
 #define DISABLE_CTRL PORTC_PCR3
 #define DISABLE_BIT  (1<<3)
 #define DIR_CTRL PORTC_PCR4
-#define DIR_BIT  (1<<4)
+#define DIR_BIT  (1<<1)
 #define STEP_CTRL PORTC_PCR5
-#define STEP_BIT  (1<<5)
+#define STEP_BIT  (1<<0)
 
 // All input is placed on port b
 // Pin 16 is the global sync line
