@@ -21,3 +21,5 @@
 *.d
 *.hex
 *.elf
+
+vsproj/*

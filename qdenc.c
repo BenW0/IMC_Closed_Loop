@@ -17,12 +17,14 @@
 #include <stdio.h>
 
 #include "qdenc.h"
+
+#ifdef USE_QD_ENC
  
 // Global Variables ==========================================
 volatile unsigned long isr1_count = 0, isr2_count = 0;
  
 // Local Variables ===========================================
-volatile long encoder_offset = 0;   // added to the actual encoder value when read.
+static volatile long encoder_offset = 0;   // added to the actual encoder value when read.
 static char message[100] = "Hello, World";
  
 /********************************************************************************
@@ -30,7 +32,7 @@ static char message[100] = "Hello, World";
  * Notes:
  *    -
  ********************************************************************************/
-void QEI_Init(void)
+void enc_Init(void)
 {
     //enable the clock for FTM2 & CMP modules
     SIM_SCGC3 |= SIM_SCGC3_FTM2_MASK;
@@ -89,7 +91,7 @@ void QEI_Init(void)
 
 }
 
-void QEI_Deinit(void)
+void enc_Deinit(void)
 {
 	/* disable interrupts */
     NVIC_DISABLE_IRQ(IRQ_FTM2);
@@ -190,3 +192,5 @@ void set_qenc_value(int32_t newvalue)
 {
   encoder_offset = newvalue - (int32_t)FTM2_CNT;
 }
+
+#endif

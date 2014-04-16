@@ -14,6 +14,7 @@
  *    PC6 <--> 11 - DOUT
  *    PC7 <--> 12 - DIN
  *    PC5 <--> 13 - SCK
+ *  PD3 <--> 8 - controller heartbeat (this bit toggles every time the controller updates)
  *  The motor interface is described in in hardware.h. NOTE that to accommodate SPI interface
  *  to the sensor, pinnouts for the motor driver have changed!
  *
@@ -51,6 +52,8 @@
 #include "stepper.h"
 #include "hardware.h"
 #include "qdenc.h"
+#include "ctrl.h"
+#include "path.h"
 
 typedef enum {
   SS_IDLE,
@@ -87,11 +90,13 @@ int main()
   //GPIOC_PDDR |= 1<<5;
   reset_hardware();
   initialize_stepper_state();
-  QEI_Init();
+  enc_Init();
   // enable motor and wait for a bit for the coils to stabilize
   enable_stepper();
   delay(100);
-  set_qenc_value(0);   // zero out the encoder
+  set_enc_value(0);   // zero out the encoder
+	// start up control
+	init_ctrl();
   while(1){
 		// are there serial bytes to read?
 		if(usb_serial_available() > 0)
@@ -102,7 +107,7 @@ int main()
     if(show_encoder_time > 0 && systick_millis_count > next_encoder_time)
 		{
       next_encoder_time = systick_millis_count + show_encoder_time;
-      sprintf(message, "%li--%lu--%lu\n", get_qenc_value(), isr1_count, isr2_count);
+      sprintf(message, "%li--%lu--%lu\n", get_enc_value(), isr1_count, isr2_count);
       usb_serial_write(message,strlen(message));
     }
     
@@ -170,7 +175,7 @@ void parse_usb(void)
         set_steps_to_go(abs(foo));
         
         sysstate = SS_MOVE_STEPS;
-        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_qenc_value());
+        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_enc_value());
         usb_serial_write(message, strlen(message));
         enable_stepper();
         execute_move();
@@ -185,9 +190,36 @@ void parse_usb(void)
       }
       break;
     case 'p':
-      // this will be pid control mode
-      sprintf(message, "Not implemented yet!\n");
-      usb_serial_write(message, strlen(message));
+      // PID control mode
+      // try to read a step target
+      if(sscanf(buf + i, " %li%n", (long *)&foo, &read))
+      {
+        i += read;
+        
+        path_set_step_target(foo);
+        sysstate = SS_PID_CTRL;
+        ctrl_enable(CTRL_PID);
+
+        enable_stepper();
+        execute_move();
+        moving = true;
+
+        sprintf(message, "PID control mode. Stepping from %li to %li\n", foo, get_enc_value());
+        usb_serial_write(message, strlen(message));
+      }
+      else
+      {
+        path_set_step_target(get_enc_value());
+        sysstate = SS_PID_CTRL;
+        ctrl_enable(CTRL_PID);
+
+        enable_stepper();
+        execute_move();
+        moving = true;
+
+        sprintf(message, "PID control mode.\n");
+        usb_serial_write(message, strlen(message));
+      }
       break;
     case 'g':
       // get a parameter value
@@ -236,7 +268,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
   {
   case 't':
     // encoder tic count
-    sprintf(message, "Encoder Tic Count: %li\n", (long)get_qenc_value());
+    sprintf(message, "Encoder Tic Count: %li\n", (long)get_enc_value());
     usb_serial_write(message, strlen(message));
     break;
   case 'm':
@@ -254,6 +286,36 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     sprintf(message, "Encoder every: %lu\n", (unsigned long)show_encoder_time);
     usb_serial_write(message, strlen(message));
     break;
+  case 'k':
+    // PID control parameters
+    switch(buf[(*i)++])
+    {
+    case 'p':
+      // kp - proportional constant
+      sprintf(message, "Kp: %f\n", pid_kp);
+      usb_serial_write(message, strlen(message));
+      break;
+    case 'i':
+      // ki - integral constant
+      sprintf(message, "Ki: %f\n", pid_ki);
+      usb_serial_write(message, strlen(message));
+      break;
+    case 'd':
+      // kd - derivative constant
+      sprintf(message, "Kd: %f\n", pid_kd);
+      usb_serial_write(message, strlen(message));
+      break;
+    }
+  case 'u':
+    // last controller update time
+    sprintf(message, "Last ctrl update time: %f ms\n", ctrl_get_update_time());
+    usb_serial_write(message, strlen(message));
+    break;
+  case 'p':
+    // controller update period (in ms)
+    sprintf(message, "Controller update period: %lu ms\n", ctrl_get_period() / 1000.f);
+    usb_serial_write(message, strlen(message));
+    break;
   default :
     // didn't understand!
     sprintf(message, "I didn't understand which parameter you want to query.\n");
@@ -265,7 +327,9 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
 void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
 {
   int32_t foo;
+  float ffoo;
   int read;
+  bool parseok = false;
   // which parameter?
   switch(buf[(*i)++])
   {
@@ -274,12 +338,8 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     if(sscanf(buf + *i, " %li%n", (long *)&foo, &read))
     {
       *i += read;
-      set_qenc_value(foo);
-    }
-    else
-    {
-      sprintf(message, "Failed to parse new tic value!\n");
-      usb_serial_write(message, strlen(message));
+      set_enc_value(foo);
+      parseok = true;
     }
     break;
     
@@ -289,11 +349,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     {
       *i += read;
       set_position(foo);
-    }
-    else
-    {
-      sprintf(message, "Failed to parse new motor position!\n");
-      usb_serial_write(message, strlen(message));
+      parseok = true;
     }
     break;
   case 'o':
@@ -302,11 +358,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     {
       *i += read;
       show_encoder_time = foo;
-    }
-    else
-    {
-      sprintf(message, "Failed to parse new encoder update frequency!\n");
-      usb_serial_write(message, strlen(message));
+      parseok = true;
     }
     break;
   case 'f':
@@ -320,22 +372,66 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
         if(SS_FIXED_SPEED == sysstate)
           set_direction(foo > 0);
         set_step_events_per_minute((uint32_t)abs(foo));
-      }
-      else
-      {
-        sprintf(message, "Failed to parse new step frequency!\n");
-        usb_serial_write(message, strlen(message));
+        parseok = true;
       }
     }
     else
     {
       sprintf(message, "Cannot set step frequency when not in Fixed Step mode or Move Steps mode!\n");
       usb_serial_write(message, strlen(message));
+      parseok = true;
+    }
+    break;
+  case 'k':
+    // PID control parameters
+    switch(buf[(*i)++])
+    {
+    case 'p':
+      // kp - proportional constant
+      if(sscanf(buf + *i, " %f%n", &ffoo, &read))
+      {
+        *i += read;
+        pid_kp = foo;
+        parseok = true;
+      }
+      break;
+    case 'i':
+      // ki - integral constant
+      if(sscanf(buf + *i, " %f%n", &ffoo, &read))
+      {
+        *i += read;
+        pid_ki = foo;
+        parseok = true;
+      }
+      break;
+    case 'd':
+      // kd - derivative constant
+      if(sscanf(buf + *i, " %f%n", &ffoo, &read))
+      {
+        *i += read;
+        pid_kd = foo;
+        parseok = true;
+      }
+      break;
+    }
+  case 'p':
+    // controller update period (ms)
+    if(sscanf(buf + *i, " %lu%n", &foo, &read))
+    {
+      *i += read;
+      ctrl_set_period(foo * 1000L);
+      parseok = true;
     }
     break;
   default :
     // didn't understand!
     sprintf(message, "I didn't understand which parameter you want to query.\n");
+    usb_serial_write(message, strlen(message));
+    parseok = true;
+  }
+  if(!parseok)
+  {
+    sprintf(message, "Failed to parse new value.\n");
     usb_serial_write(message, strlen(message));
   }
 }

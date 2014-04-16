@@ -123,14 +123,17 @@ void pit0_isr(void) {
   trigger_pulse();
 
   // are we out of steps on a steps-limited move?
-  if(--steps_to_go == 0)
+  if(steps_to_go >= 0)
   {
-    st.state = STATE_IDLE;  // disable the timer
-    steps_to_go = -1; // disable the step counter
+    if(--steps_to_go == 0)
+    {
+      st.state = STATE_IDLE;  // disable the timer
+      steps_to_go = -1; // disable the step counter
+    }
+    // are we close? (if so, slow down to safe speed)
+    if(steps_to_go < 30)
+      set_step_events_per_minute(max(get_step_events_per_minute() - 400, MINIMUM_STEPS_PER_MINUTE));
   }
-  // are we close? (if so, slow down to safe speed)
-  if(steps_to_go > 0 && steps_to_go < 30)
-    set_step_events_per_minute(max(get_step_events_per_minute() - 400, MINIMUM_STEPS_PER_MINUTE));
   
   if(st.state == STATE_IDLE || st.state == STATE_ERROR){
     // Disable this interrupt
@@ -140,8 +143,6 @@ void pit0_isr(void) {
   }
   // clear the interrupt flag
   PIT_TFLG0 = 1;
-  
-  
   
   // load new cycle count
   st.cycles_per_step_event = config_step_timer(st.new_cycles_per_step_event);
@@ -178,9 +179,9 @@ void execute_move(void){
 
   st.state = STATE_EXECUTE;
 
-  PIT_TCTRL0 &= ~TEN;
-  PIT_LDVAL0 = 48;
-  PIT_TCTRL0 |= TEN | TIE;
+  //PIT_TCTRL0 &= ~TEN;
+  //PIT_LDVAL0 = 48;
+  //PIT_TCTRL0 |= TEN | TIE;
 }
 
 // Immediately kill all motion, probably killing position due to deceleration
