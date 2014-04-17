@@ -179,11 +179,12 @@ void cpm1_isr(void)
 }
 
 
-// get_qenc_value()
-// returns the current encoder tic index
-int32_t get_qenc_value(void)
+// get_enc_value()
+// returns the current encoder tic index in value. Returns 0 normally or 1 if we lost track.
+uint8_t get_enc_value(int32_t *value)
 {
-  return (int32_t)FTM2_CNT + encoder_offset;
+  *value = (int32_t)FTM2_CNT + encoder_offset;
+  return 0;
 }
 
 // set_qenc_value()

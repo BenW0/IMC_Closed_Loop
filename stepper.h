@@ -44,8 +44,8 @@ void enable_stepper(void);
 // Power down the stepper motor
 void disable_stepper(void);
 // Getters and setters for current position - used for homing and reporting positions
-int32_t get_position(void);
-void set_position(uint32_t);
+int32_t get_motor_position(void);
+void set_motor_position(uint32_t);
 // Get/Set steps to go - limit move length by a number of steps. Positive unless disabled (=-1).
 void set_steps_to_go(int32_t steps);
 int32_t get_steps_to_go(void);

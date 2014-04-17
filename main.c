@@ -31,12 +31,17 @@
  *   sX YYYY - sets parameter X's value to YYYY
  * 
  *  Parameters:
+ *    d - controller history dump (binary)
+ *    f - current move frequency (in fixed mode, this is the last number entered) (int32)
+ *    k - Controller parameters:
+ *      kp - PID proportional constant
+ *      ki - PID integral constant
+ *      kd - PID derivative constant
  *    t - encoder tic count (int32)
  *    m - motor step position (int32)
- *    f - current move frequency (in fixed mode, this is the last number entered) (int32)
- *    p,i,d - PID controller's P, I, and D constants, respectively (int32)
- *    k - encoder tics per motor step (float)
  *    o - occasionally output encoder value. Value specifies the number of ms between reporting. 0 = off (uint)
+ *    p - controller update period (in ms)
+ *    u - last controller update time (in ms), read only
  *
  *
  * License: This code is for internal development only and has not been licensed for public release.
@@ -64,27 +69,31 @@ typedef enum {
 
 // Global Variables ==========================================================
 extern volatile uint32_t systick_millis_count;    // system millisecond timer
+extern float pid_kp, pid_ki, pid_kd;
+sys_state_e sysstate = SS_IDLE;
+uint32_t enc_tics_per_step;                       // encoder tics per motor (micro)step (roughly)
+float steps_per_enc_tic;                          // = 1 / enc_tics_per_step
+
 // this only rolls over every 50 days of execution time, so I'll ignore that possibility.
 
 // Local Variables ===========================================================
 static char message[100] = "Hello, World";
-sys_state_e sysstate = SS_IDLE;
-uint32_t show_encoder_time = 0;
-bool moving = false;
+static uint32_t show_encoder_time = 0;
+static bool moving = false;
 
 
 // Function Predeclares ======================================================
 void parse_usb();
 void parse_get_param(const char *buf, uint32_t *i, uint32_t count);
 void parse_set_param(const char *buf, uint32_t *i, uint32_t count);
-extern void ftm2_isr(void);
-void QEI_Init(void);
+void set_enc_tics_per_step(uint32_t etps);
 
 
 
 int main()
 {
   uint32_t next_encoder_time = 0;
+  int32_t value;
   
   //PORTC_PCR5 = PORT_PCR_SRE | PORT_PCR_DSE | PORT_PCR_MUX(1);
   //GPIOC_PDDR |= 1<<5;
@@ -107,17 +116,22 @@ int main()
     if(show_encoder_time > 0 && systick_millis_count > next_encoder_time)
 		{
       next_encoder_time = systick_millis_count + show_encoder_time;
-      sprintf(message, "%li--%lu--%lu\n", get_enc_value(), isr1_count, isr2_count);
+      if(get_enc_value(&value))
+        sprintf(message, "%li**\n", value);   // signal we lost track!
+      else
+        sprintf(message, "%li\n", value);
       usb_serial_write(message,strlen(message));
     }
     
     if(SS_MOVE_STEPS == sysstate && get_steps_to_go() == -1 && moving)
     {
       // done with move!
-      sprintf(message, "Move complete. New step position = %li; Encoder position = %li\n", (long)get_position(), (long)get_qenc_value());
+      get_enc_value(&value);
+      sprintf(message, "Move complete. New step position = %li; Encoder position = %li\n", (long)get_motor_position(), (long)value);
       usb_serial_write(message,strlen(message));
       moving = false;
     }
+    enc_idle();
   }
 }
 
@@ -127,7 +141,7 @@ void parse_usb(void)
   char buf[100];
   uint32_t count = 0;
   int read = 0;
-  int32_t foo;
+  int32_t foo, foo2;
   uint32_t i;
   
   count = usb_serial_read(buf, min(usb_serial_available(), 100));
@@ -175,7 +189,8 @@ void parse_usb(void)
         set_steps_to_go(abs(foo));
         
         sysstate = SS_MOVE_STEPS;
-        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_enc_value());
+        get_enc_value(&foo);
+        sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo);
         usb_serial_write(message, strlen(message));
         enable_stepper();
         execute_move();
@@ -204,12 +219,14 @@ void parse_usb(void)
         execute_move();
         moving = true;
 
-        sprintf(message, "PID control mode. Stepping from %li to %li\n", foo, get_enc_value());
+        get_enc_value(&foo2);
+        sprintf(message, "PID control mode. Stepping from %li to %li\n", foo, foo2);
         usb_serial_write(message, strlen(message));
       }
       else
       {
-        path_set_step_target(get_enc_value());
+        get_enc_value(&foo);
+        path_set_step_target(foo);
         sysstate = SS_PID_CTRL;
         ctrl_enable(CTRL_PID);
 
@@ -249,7 +266,8 @@ void parse_usb(void)
           i += read;
           set_direction((foo) > 0);
           set_steps_to_go((uint32_t)abs(foo));
-          sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_position(), foo, get_qenc_value());
+          get_enc_value(&foo2);
+          sprintf(message, "Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
           usb_serial_write(message, strlen(message));
           execute_move();
           moving = true;
@@ -263,17 +281,19 @@ void parse_usb(void)
 // Parses a Get Parameter message
 void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
 {
+  int32_t foo;
   // which parameter?
   switch(buf[(*i)++])
   {
   case 't':
     // encoder tic count
-    sprintf(message, "Encoder Tic Count: %li\n", (long)get_enc_value());
+    get_enc_value(&foo);
+    sprintf(message, "Encoder Tic Count: %li\n", (long)foo);
     usb_serial_write(message, strlen(message));
     break;
   case 'm':
     // motor step position
-    sprintf(message, "Motor Position (steps): %li\n", (long)get_position());
+    sprintf(message, "Motor Position (steps): %li\n", (long)get_motor_position());
     usb_serial_write(message, strlen(message));
     break;
   case 'f':
@@ -316,6 +336,10 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     sprintf(message, "Controller update period: %lu ms\n", ctrl_get_period() / 1000.f);
     usb_serial_write(message, strlen(message));
     break;
+  case 'd':
+    // controller history dump (binary)
+    output_history();
+    break;
   default :
     // didn't understand!
     sprintf(message, "I didn't understand which parameter you want to query.\n");
@@ -348,7 +372,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     if(sscanf(buf + *i, " %li%n", (long *)&foo, &read))
     {
       *i += read;
-      set_position(foo);
+      set_motor_position(foo);
       parseok = true;
     }
     break;
@@ -434,4 +458,12 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     sprintf(message, "Failed to parse new value.\n");
     usb_serial_write(message, strlen(message));
   }
+}
+
+
+// sets the encoder tics per motor step parameter (and its inverse)
+void set_enc_tics_per_step(uint32_t etps)
+{
+  enc_tics_per_step = etps;
+  steps_per_enc_tic = 1.f / (float)etps;
 }

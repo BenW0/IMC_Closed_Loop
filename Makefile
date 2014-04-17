@@ -15,7 +15,7 @@ CXX = $(COMPILER)/arm-none-eabi-g++
 OBJCOPY = $(COMPILER)/arm-none-eabi-objcopy
 SIZE = $(COMPILER)/arm-none-eabi-size
 
-OBJECTS = main.o hardware.o stepper.o qdenc.o spienc.o ctrl.o
+OBJECTS = main.o hardware.o stepper.o qdenc.o spienc.o ctrl.o path.o
 
 VENDOR_C = $(wildcard $(VENDOR)/*.c)
 VENDOR_OBJECTS = $(patsubst %.c,%.o,$(VENDOR_C))

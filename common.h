@@ -10,7 +10,8 @@
 #define __cplusplus
 #define __builtin_va_list int
 #define __asm__(x)
-#define F_CPU  0
+#define F_CPU  48000000
+#define F_BUS 48000000
 #endif 
 
 #include <mk20dx128.h>
@@ -25,6 +26,6 @@
 
 // This define controls whether to use the QD-input or the SPI-input encoder. Disable
 // to use the SPI-based encoder
-#define USE_QD_ENC
+//#define USE_QD_ENC
 
 #endif

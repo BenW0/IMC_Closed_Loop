@@ -1,12 +1,13 @@
 /* SPI Encoder Reading module */
-#ifndef __qdenc_h
-#define __qdenc_h
+#ifndef __spienc_h
+#define __spienc_h
 
 #ifndef USE_QD_ENC
 
 void enc_Init(void);
+void enc_idle(void);
 
-int32_t get_enc_value(void);
+uint8_t get_enc_value(int32_t *);
 void set_enc_value(int32_t);
 
 #endif

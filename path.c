@@ -16,6 +16,9 @@
 
 #include "path.h"
 
+// Global Variables ====================================================================
+extern uint32_t systick_millis_count;
+
 // Local Variables =====================================================================
 static bool step_mode = true;      // True if the last set command we received was a step (instead of a move)
 static int32_t step_target = 0;    // step command target

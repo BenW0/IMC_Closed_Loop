@@ -190,9 +190,9 @@ void stop_motion(void){
   PIT_TCTRL0 &= ~TEN;
 }
 
-int32_t get_position(void){
+int32_t get_motor_position(void){
   return st.position;
 }
-void set_position(uint32_t p){
+void set_motor_position(uint32_t p){
   st.position = p;
 }
