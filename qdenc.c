@@ -85,8 +85,6 @@ void enc_Init(void)
     /* Init encoder interrupts */
     NVIC_ENABLE_IRQ(IRQ_FTM2);//
     NVIC_ENABLE_IRQ(IRQ_CMP1);//
-		//||\\??Should this be disabled?
-    //sei();
     /***********************/
 
 }
@@ -189,7 +187,7 @@ uint8_t get_enc_value(int32_t *value)
 
 // set_qenc_value()
 // sets the current encoder tic index (by offsetting the current value)
-void set_qenc_value(int32_t newvalue)
+void set_enc_value(int32_t newvalue)
 {
   encoder_offset = newvalue - (int32_t)FTM2_CNT;
 }

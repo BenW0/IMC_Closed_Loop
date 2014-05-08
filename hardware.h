@@ -9,10 +9,10 @@
 // Pin 15 is step
 #define DISABLE_CTRL PORTC_PCR3
 #define DISABLE_BIT  (1<<3)
-#define DIR_CTRL PORTC_PCR4
+#define DIR_CTRL PORTC_PCR1
 #define DIR_BIT  (1<<1)
-#define STEP_CTRL PORTC_PCR5
-#define STEP_BIT  (1<<0)
+#define STEP_CTRL PORTC_PCR0
+#define STEP_BIT  1
 
 // All input is placed on port b
 // Pin 16 is the global sync line

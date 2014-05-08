@@ -6,6 +6,7 @@
 #include "stepper.h"
 
 
+
 #define TICKS_PER_MICROSECOND (F_CPU/1000000)
 #define CYCLES_PER_ACCELERATION_TICK ((TICKS_PER_MICROSECOND*1000000)/ACCELERATION_TICKS_PER_SECOND)
 
@@ -24,6 +25,8 @@ volatile uint32_t out_step;
 volatile uint32_t out_dir;
 
 volatile int32_t steps_to_go = -1;
+
+static uint32_t old_steps_per_minute = MINIMUM_STEPS_PER_MINUTE;
 
 // Reset all stepper parameters, setup clocks, and make sure
 // there is no power to steppers.
@@ -96,6 +99,8 @@ uint32_t get_step_events_per_minute(void)
 void set_direction(bool forward)
 {
 	out_dir = (uint32_t)forward;
+  // set the direction NOW. Needed for bang-bang control.
+  STEPPER_PORT(DOR) = (STEPPER_PORT(DOR) & ~DIR_BIT) | (out_dir ? DIR_BIT : 0);
 }
 
 bool get_direction(void)
@@ -122,13 +127,18 @@ void pit0_isr(void) {
   // fire a step
   trigger_pulse();
 
+
   // are we out of steps on a steps-limited move?
   if(steps_to_go >= 0)
   {
     if(--steps_to_go == 0)
     {
+      set_step_events_per_minute(old_steps_per_minute); // restore old step rate
       st.state = STATE_IDLE;  // disable the timer
       steps_to_go = -1; // disable the step counter
+      PIT_TCTRL0 &= ~TEN;
+      PIT_TFLG0 = 1;
+      return;
     }
     // are we close? (if so, slow down to safe speed)
     if(steps_to_go < 30)
@@ -155,7 +165,7 @@ inline void trigger_pulse(void){
   pit1_state.step_interrupt_status = PULSE_SET;
   PIT_LDVAL1 = STEP_PULSE_DELAY;
 #else
-  STEPPER_PORT(TOR) = STEP_BIT;
+  STEPPER_PORT(SOR) = STEP_BIT;   //||\\!! was TOR
   PIT_LDVAL1 = pit1_state.pulse_length;
 #endif
   PIT_TCTRL1 |= TEN;
@@ -165,7 +175,7 @@ inline void trigger_pulse(void){
 void pit1_isr(void){
   PIT_TFLG1 = 1;
   PIT_TCTRL1 &= ~TEN;
-  STEPPER_PORT(TOR) = STEP_BIT;
+  STEPPER_PORT(COR) = STEP_BIT;   //||\\!! Was TOR
 #ifdef STEP_PULSE_DELAY
   if(pit1_state.step_interrupt_status == PULSE_SET){
     pit1.step_interrupt_status = PULSE_RESET;
@@ -178,10 +188,11 @@ void pit1_isr(void){
 void execute_move(void){
 
   st.state = STATE_EXECUTE;
+  old_steps_per_minute = get_step_events_per_minute();
 
   //PIT_TCTRL0 &= ~TEN;
   //PIT_LDVAL0 = 48;
-  //PIT_TCTRL0 |= TEN | TIE;
+  PIT_TCTRL0 |= TEN | TIE;
 }
 
 // Immediately kill all motion, probably killing position due to deceleration

@@ -4,8 +4,10 @@
 
 typedef enum
 {
-  CTRL_DISABLED,
-  CTRL_PID
+  CTRL_DISABLED,    // module disabled.
+  CTRL_UNITY,       // Controller is G(z) = 1
+  CTRL_PID,          // PID control mode
+  CTRL_BANG         // bang-bang control mode
 } ctrl_mode;
 
 void ctrl_init(void);

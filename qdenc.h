@@ -7,7 +7,7 @@
 void enc_Init(void);
 void enc_Deinit(void);
 
-void enc_idle(void) {}    // not used by quadrature encoder
+//void enc_idle(void) {}    // not used by quadrature encoder
 
 uint8_t get_enc_value(int32_t *);
 void set_enc_value(int32_t);

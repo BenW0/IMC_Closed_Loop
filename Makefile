@@ -7,7 +7,7 @@ VENDOR = $(TEENSY_PATH)/hardware/vendor/
 
 CPPFLAGS = -Wall -g -Os -mcpu=cortex-m4 -mthumb -nostdlib -MMD -DF_CPU=$(CLOCK) -DUSB_SERIAL -I$(VENDOR) -D__MK20DX256__
 CXXFLAGS = -std=gnu++0x -felide-constructors -fno-exceptions -fno-rtti
-CFLAGS =
+CFLAGS = -std=gnu11
 LDFLAGS = -Os -Wl,--gc-sections -mcpu=cortex-m4 -mthumb -T$(VENDOR)/mk20dx256.ld
 LIBS = -lm
 CC = $(COMPILER)/arm-none-eabi-gcc

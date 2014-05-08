@@ -45,7 +45,7 @@ uint8_t read_spi(uint32_t *value);
 void enc_Init(void)
 {
   spififo_begin(10, SPI_CLOCK_1MHz, SPI_MODE2);
-  last_update_millis = systick_millis_count;
+  last_update_millis = get_systick_tenus() * 100;
 
   if(read_spi(&readval))
   {
@@ -79,9 +79,9 @@ void enc_idle(void)
     lost_track = true;
   }
   // has it been too long since we had an update?
-  if(systick_millis_count - last_update_millis > MS_BEFORE_LOST_TRACK)
+  if(get_systick_tenus() - last_update_millis > MS_BEFORE_LOST_TRACK)
     lost_track = true;
-  last_update_millis = systick_millis_count;
+  last_update_millis = get_systick_tenus() * 100;
 }
 
 
