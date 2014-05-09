@@ -12,6 +12,7 @@
 #define __asm__(x)
 #define F_CPU  48000000
 #define F_BUS 48000000
+#define __MK20DX256__
 #endif 
 
 #include <mk20dx128.h>

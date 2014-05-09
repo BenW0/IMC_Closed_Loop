@@ -58,8 +58,11 @@
  *      ki - PID integral constant
  *      kd - PID derivative constant
  *      km - control to position instead of velocity (int32 but represents a boolean - 1 means on, 0 means off)
+ *      kf - feedforward time advance (in update steps - uint32)
  *    t - encoder tic count (int32)
- *    m - motor step position (int32)
+ *    m* - motor parameters.
+ *      mp - step position (int32)
+ *      mf - force step counter reset whenever the step events per minute function is called. (int32 but represents a boolean - 1 means on, 0 means off)
  *    o - occasionally output encoder value. Value specifies the number of ms between reporting. 0 = off (uint)
  *    p - controller update period (in ms)
  *    q - encoder tics per step (float)
@@ -96,9 +99,11 @@ typedef enum {
 //extern volatile uint32_t systick_millis_count;    // system millisecond timer
 extern float pid_kp, pid_ki, pid_kd;
 extern float max_ctrl_vel, min_ctrl_vel;
-extern uint32_t pos_ctrl_mode;
+extern bool pos_ctrl_mode;
+extern uint32_t ctrl_feedforward_advance;
 extern float sine_freq_base, sine_amp;
 extern uint32_t sine_count;
+extern bool force_steps_per_minute;
 sys_state_e sysstate = SS_IDLE;
 float enc_tics_per_step = 1.4986;                       // encoder tics per motor (micro)step (roughly)
 float steps_per_enc_tic = 1/1.4986;                          // = 1 / enc_tics_per_step
@@ -129,6 +134,18 @@ int main()
 
   // change the cpu systic clock to only roll over every SYSTICK_UPDATE_MS milliseconds:
   SYST_RVR = (F_CPU / 1000) * (SYSTICK_UPDATE_TEN_US / 100L) - 1;
+
+  // reset the prioritization of interrupts on our chip. We'll set everything down to 3, then
+  // boost up the control interrupt to 2 AND the stepper interrupts to 1. 
+  // IRQ priorities are set using the high nibble.
+  for(uint32_t i = 0; i < NVIC_NUM_INTERRUPTS; i++)
+  {
+    NVIC_SET_PRIORITY(i, 48);
+  }
+  NVIC_SET_PRIORITY(IRQ_PIT_CH3, 32);
+  NVIC_SET_PRIORITY(IRQ_PIT_CH0, 16);
+  NVIC_SET_PRIORITY(IRQ_PIT_CH1, 16);
+
   
   reset_hardware();
   initialize_stepper_state();
@@ -481,10 +498,22 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     usb_serial_write(message, strlen(message));
     break;
   case 'm':
-    // motor step position
-    sprintf(message, "%li\n", (long)get_motor_position());
-    usb_serial_write(message, strlen(message));
+    // motor driver parameters
+    switch(buf[(*i)++])
+    {
+    case 'f':
+      // mf - force counter reset on update
+      sprintf(message, "%li\n", (long)force_steps_per_minute);
+      usb_serial_write(message, strlen(message));
+      break;
+    case 'p':
+      // mp - motor step position
+      sprintf(message, "%li\n", (long)get_motor_position());
+      usb_serial_write(message, strlen(message));
+      break;
+    }
     break;
+
   case 'f':
     // current move frequency
     sprintf(message, "%li\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
@@ -519,8 +548,14 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
       sprintf(message, "%i\n", pos_ctrl_mode ? 1 : 0);
       usb_serial_write(message, strlen(message));
       break;
+    case 'f':
+      // kf - feedforward advance time (update steps)
+      sprintf(message, "%lu\n", ctrl_feedforward_advance);
+      usb_serial_write(message, strlen(message));
+      break;
     }
     break;
+
   case 'u':
     // last controller update time
     sprintf(message, "%f\n", ctrl_get_update_time());
@@ -608,14 +643,30 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     break;
     
   case 'm':
-    // motor step position
-    if(sscanf(buf + *i, " %li%n", (long *)&foo, &read) == 1)
+    // Motor driver (stepper.c) parameters
+    switch(buf[(*i)++])
     {
-      *i += read;
-      set_motor_position(foo);
-      parseok = true;
+    case 'f':
+      // mf - force motor timer update
+      if(sscanf(buf + *i, " %li%n", &foo, &read) == 1)
+      {
+        *i += read;
+        force_steps_per_minute = (foo != 0);
+        parseok = true;
+      }
+      break;
+    case 'p':
+      // mp - Motor position
+      if(sscanf(buf + *i, " %li%n", (long *)&foo, &read) == 1)
+      {
+        *i += read;
+        set_motor_position(foo);
+        parseok = true;
+      }
+      break;
     }
     break;
+    
   case 'o':
     // encoder readout frequency
     if(sscanf(buf + *i, " %lu%n", (long *)&foo, &read) == 1)
@@ -683,6 +734,15 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       {
         *i += read;
         pos_ctrl_mode = (foo != 0);
+        parseok = true;
+      }
+      break;
+    case 'f':
+      // kf - feedforward advance steps
+      if(sscanf(buf + *i, " %lu%n", &foo, &read) == 1)
+      {
+        *i += read;
+        ctrl_feedforward_advance = foo;
         parseok = true;
       }
       break;

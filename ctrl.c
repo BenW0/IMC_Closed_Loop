@@ -36,7 +36,7 @@ typedef struct
 
 // Constants =========================================================================
 #define HIST_SIZE   2048     // have the history use ~40k of memory. Needs to be a power of 2.
-//extern volatile uint32_t systick_millis_count;    // system millisecond timer
+#define FF_TARGETS 16        // Feed forward target buffer size. another ring buffer...needs to be a power of 2.
 
 // Global Variables ==================================================================
 extern float enc_tics_per_step;
@@ -45,6 +45,7 @@ float pid_kp = 0.f, pid_ki = 0.f, pid_kd = 0.f;
 float min_ctrl_vel = 0;
 float max_ctrl_vel = 1.0e6;      //maximum velocity my test motor can support consistently without stalling.
 bool pos_ctrl_mode = false;       // controllers output new position target which gets converted to velocity.
+uint32_t ctrl_feedforward_advance = 0;
 
 // Local Variables ===================================================================
 static ctrl_mode mode = CTRL_DISABLED;
@@ -57,6 +58,10 @@ static uint32_t hist_time_offset = 0;
 static char message[100] = "Hello, World";
 static volatile float last_vel = 0;   // velocity chosen last update
 static volatile int32_t last_encpos = 0.f;
+static volatile real ctrl_integrator = 0.f;   // control integrator variable.
+static volatile real ff_target_pos_buf[FF_TARGETS];
+static volatile real ff_target_vel_buf[FF_TARGETS];
+static volatile uint32_t ff_target_head = 0;
 
 
 // PID variables
@@ -85,6 +90,8 @@ void init_ctrl(void)
 
   // clear the history ringbuffer
   memset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
+  memset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
+  memset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
 }
 
 // Sets the frequency of the controller update
@@ -118,6 +125,10 @@ void ctrl_enable(ctrl_mode newmode)
     pid_i_sum = 0;
     get_enc_value(&last_encpos);
     last_vel = 0;
+    ctrl_integrator = 0;
+    ff_target_head = 0;
+    memset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
+    memset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
     // if the mode has changed, reset the history buffer
     if(newmode != mode)
     {
@@ -176,9 +187,12 @@ void output_history(void)
 void pit3_isr(void) 
 {
 	uint32_t old_systic, new_systic, time_of_update;
-	int32_t encpos;
-  real target_pos, target_vel, newvel = enc_tics_per_step;
+	int32_t encpos, motorpos;
+  real target_pos, target_vel, ctrl_out;
 	
+	// Update the controller heartbeat
+	GPIOD_PTOR = (1<<3);
+
 	// get the current system tick timer so we can add the time it takes to do the loop update into the update frequency
 	// remember, the timer counts down.
 	old_systic = SYST_CVR;
@@ -187,29 +201,30 @@ void pit3_isr(void)
 	// Read the encoder position
 	//||\\!! TODO: figure out what happens if the encoder has lost track...
   get_enc_value(&encpos);
+  motorpos = get_motor_position();
   last_vel = (encpos - last_encpos) / ctrl_period_sec * 60;   // tics/min
   
 
-  // get the path target location (encoder tics) and velocity (encoder tics/minute)
-  path_get_target(&target_pos, &target_vel, time_of_update);
+  target_pos = ff_target_pos_buf[(ff_target_head - ctrl_feedforward_advance) & (FF_TARGETS - 1)];
+  target_vel = ff_target_vel_buf[(ff_target_head - ctrl_feedforward_advance) & (FF_TARGETS - 1)];
 	
 	// perform the control law
   switch(mode)
   {
   case CTRL_UNITY :
     if(pos_ctrl_mode)
-      newvel = target_pos;
+      ctrl_out = 0;   // no control signal
     else
-      newvel = target_vel;
+      ctrl_out = target_vel;
     break;
   case CTRL_PID :
-    newvel = pid_ctrl(ctrl_period_sec, target_pos, target_vel, encpos, last_vel);
+    ctrl_out = pid_ctrl(ctrl_period_sec, target_pos, target_vel, encpos, last_vel);
     break;
   case CTRL_BANG :
     bang_ctrl(ctrl_period_sec, target_pos, target_vel, encpos);
-    newvel = 0;   // bang-bang doesn't use velocity.
+    ctrl_out = 0;   // bang-bang doesn't use velocity.
     break;
-  case CTRL_DISABLED :
+  default :
     // disable this interrupt
     PIT_TCTRL3 &= ~PIT_TCTRL_TEN_MASK;
     // clear the interrupt flag
@@ -219,65 +234,78 @@ void pit3_isr(void)
 
   if(pos_ctrl_mode)
   {
-    // in this mode, "newvel", the output of the controller, gets interpreted as a new position target, 
-    // and actual velocity is computed from the error between the position target and the current position.
-    newvel = -((real)encpos - newvel) / ctrl_period_sec * 60;    // see notebook, 5/7/14
+    // in this mode, "ctrl_out", the output of the controller, gets interpreted as a new position error, 
+    // and actual velocity is computed from the error between the position target and the current MOTOR position.
+    // (calculation is still done in tics so we maintain compatibility with the normal mode)
+    // see notes on 5/8/14
+    // integrate ctrl_out:
+    //ctrl_integrator += ctrl_out * ctrl_period_sec;
+    //ctrl_out = ctrl_integrator;
+    ctrl_out += ff_target_pos_buf[ff_target_head];   // use the advanced feedforward target here to null out the system lag.
+    ctrl_out = -((real)motorpos * enc_tics_per_step - ctrl_out) / ctrl_period_sec * 60;    // see notebook, 5/7/14
   }
 
   // clamp the new velocity
-  if(fabsf(newvel) < min_ctrl_vel) newvel = 0;
-  if(fabsf(newvel) > max_ctrl_vel) newvel = copysignf(max_ctrl_vel, newvel);
+  if(fabsf(ctrl_out) < min_ctrl_vel) ctrl_out = 0;
+  if(fabsf(ctrl_out) > max_ctrl_vel) ctrl_out = copysignf(max_ctrl_vel, ctrl_out);
   
 
   // save this update to the ring buffer
   hist_head = (hist_head + 1) & (HIST_SIZE - 1);   // list_size is a power of 2, so list_size - 1 is 0b0..01..1
   hist_data[hist_head].time = time_of_update - hist_time_offset;  // rollover may occur here, but this is just reporting.
-  hist_data[hist_head].motor_position = get_motor_position() * enc_tics_per_step;
+  hist_data[hist_head].motor_position = motorpos * enc_tics_per_step;
   hist_data[hist_head].position = encpos;
   hist_data[hist_head].target_pos = target_pos;
   hist_data[hist_head].target_vel = target_vel;
   hist_data[hist_head].velocity = last_vel;
-  hist_data[hist_head].cmd_velocity = newvel;
+  hist_data[hist_head].cmd_velocity = ctrl_out;
 
 
   // the output was encoder tics per minute; we want that back in motor steps/minute
-  newvel = newvel * steps_per_enc_tic;
+  ctrl_out = ctrl_out * steps_per_enc_tic;
   // set the new velocity
   if(mode != CTRL_BANG)
   {
     // don't do this when we're in bang mode...it does it internally.
-    set_direction(newvel > 0 ? true : false);   
-    set_step_events_per_minute((uint32_t)abs((int32_t)floorf(newvel)));
+    set_direction(ctrl_out > 0.f ? true : false);
+    set_step_events_per_minute((uint32_t)abs((int32_t)floorf(ctrl_out)));
   }
+  
+  // get the path target location (encoder tics) and velocity (encoder tics/minute) for the NEXT update (even including feedforward).
+  // We will get the target advanced in time ctrl_feedforward_advance steps + 1 and keep it until it's current.
+  ff_target_head = (ff_target_head + 1) & (FF_TARGETS - 1);   // advance the head
+  path_get_target(ff_target_pos_buf + ff_target_head, ff_target_vel_buf + ff_target_head, time_of_update + (ctrl_feedforward_advance + 1) * ctrl_period_sec * 100000.f);
+
 	
-	// Update the controller heartbeat
-	GPIOD_PTOR = (1<<3);
   
   last_encpos = encpos;
 	
-	// reset the PIT timer's cycle time based on how long this took.
+ // __disable_irq();    // keep us from being interrupted for a sec
 	new_systic = SYST_CVR;
 
 	if(new_systic < old_systic)		// counter counts down!
 		update_time = old_systic - new_systic;
 	else	// counter rolled over
 		update_time = old_systic - new_systic + SYST_RVR;
-
-	if(update_time < ctrl_period_cycles)
-  {
-		set_update_cycles(ctrl_period_cycles - update_time);
-    //sprintf(message, "Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, ctrl_period_cycles - update_time);
-  }
-	else
-  {
-		set_update_cycles(100);		// wait some minimum time before firing again
-    //sprintf(message, "Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, 100);
-  }
   
-  //usb_serial_write(message, strlen(message));
-	
+	// reset the PIT timer's cycle time based on how long this took. That's not how PIT timers
+  // work; the following code is irrelevant (but taught me something!)
+	//if(update_time < ctrl_period_cycles)
+ // {
+	//	set_update_cycles(ctrl_period_cycles - update_time);
+ //   //sprintf(message, "Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, ctrl_period_cycles - update_time);
+ // }
+	//else
+ // {
+	//	set_update_cycles(100);		// wait some minimum time before firing again
+ //   //sprintf(message, "Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, 100);
+ // }
+ // 
+ // //usb_serial_write(message, strlen(message));
+	//
   // clear the interrupt flag
   PIT_TFLG3 = 1;
+//  __enable_irq();     // done with time critical section
 }
 
 

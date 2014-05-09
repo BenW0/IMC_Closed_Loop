@@ -28,6 +28,8 @@ volatile int32_t steps_to_go = -1;
 
 static uint32_t old_steps_per_minute = MINIMUM_STEPS_PER_MINUTE;
 
+bool force_steps_per_minute = true;   // force the stepper module to reset its counter ever update?
+
 // Reset all stepper parameters, setup clocks, and make sure
 // there is no power to steppers.
 void initialize_stepper_state(void){
@@ -41,6 +43,7 @@ void initialize_stepper_state(void){
 	PIT_TCTRL0 = TIE;
   PIT_TCTRL1 = TIE;
   PIT_TCTRL2 = TIE;
+  pit1_state.pulse_length = 500;    // 500 clock-long pulse //||\\ When integrating, make sure this is defined *somewhere*
   // Start in the idle state, but first wake up to check for keep steppers enabled option.
   NVIC_ENABLE_IRQ(IRQ_PIT_CH0);
   NVIC_ENABLE_IRQ(IRQ_PIT_CH1);
@@ -84,7 +87,7 @@ void set_step_events_per_minute(uint32_t steps_per_minute)
   // set this as the new value to be implemented on the next interrupt
   st.new_cycles_per_step_event = (F_CPU*((uint32_t)60))/steps_per_minute;
   
-  if (st.new_cycles_per_step_event < PIT_CVAL0)
+  if (force_steps_per_minute || st.new_cycles_per_step_event < PIT_CVAL0)
   {
     // reset the timer to count down from the new value.
     st.cycles_per_step_event = config_step_timer(st.new_cycles_per_step_event);
