@@ -54,7 +54,6 @@ static custom_path_dp_t custom_path[MAX_CUSTOM_PATH_LENGTH];
 static uint32_t custom_path_curloc = 0;   // upcoming location in the custom_path object
 static uint32_t custom_path_length = 0;   // length of current custom_path series.
 static uint32_t start_time = 0;    // time we started the current move.
-static char message[100];
 
 static float sine_freqs[SINE_COUNT];    // rad/tenus
 
@@ -120,7 +119,7 @@ void path_sines_setfreq(float new_base_freq)
 
 // curtime is the defined time of this update step, created with a query to get_systic_tenus()
 // at the beginning of the control update.
-void path_get_target(real *target_pos, real *target_vel, uint32_t curtime)
+void path_get_target(volatile real *target_pos, volatile real *target_vel, uint32_t curtime)
 {
   uint32_t i, elapsed_time;
   int32_t foo;

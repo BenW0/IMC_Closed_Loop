@@ -1,10 +1,21 @@
 /*******************************************************************
- * Encoder Stepper Test
+ * IMC Controller USB Serial Control Interface - used for controlling
+ * parameters and performing offline tests when not in an IMC network.
+ * This codebase is merged with Matthew Sorenson's ME599 codebase, with 
+ * ****SIGNIFICANT**** changes to pinnouts because of pins needed to interface
+ * with the encoder (SPI). The ME599 codebase is retained with as few changes
+ * as possible inside the ./imc folder. In general, when significant changes
+ * were needed, hooks have been inserted into the IMC code which map back to
+ * the local control code (see, for example, imc/stepper.c and stepper_hooks.c)
+ *
  * Ben Weiss - 2014
  * University of Washington
  *
- * Purpose: Interfaces with both a stepper motor and an encoder, with modes for different
- *   ways of controlling the stepper (feedback or no).
+ * TODO:
+ *  - merge the IMC move dequeueing with the path module -- how?
+ *  - implement velocity clamping before fault check so step inputs
+ *    aren't interpreted as faults.
+ *  - finish implementing osac control.
  *
  * Pinnout: This code is developed against a Teensy 3.1 MK20DX256 chip.
  *  PB18, PB19 <--> 32, 25 - quadrature inputs
@@ -14,8 +25,9 @@
  *    PC6 <--> 11 - DOUT
  *    PC7 <--> 12 - DIN
  *    PC5 <--> 13 - SCK
- *  PD3 <--> 8 - controller heartbeat (this bit toggles every time the controller updates)
- *  The motor interface is described in in hardware.h. NOTE that to accommodate SPI interface
+ *  (disabled) PD3 <--> 8 - controller heartbeat (this bit toggles every time the controller updates)
+ *  
+ *  The motor interface is described in in imc/hardware.h and imc/peripheral.h. NOTE that to accommodate SPI interface
  *  to the sensor, pinnouts for the motor driver have changed!
  *
  * Usage: The device enumerates as a USB serial adapter. The following commands are supported
@@ -25,12 +37,16 @@
  *       numbers can change the step size.
  *   m - move steps mode - moves a number of steps defined in the next signed long integer. Successive (whitespace-separated)
  *       numbers change the new number of "steps to go"
+ *   n - IMC network control mode
  *   c* - Controller mode
  *       cp - PID control mode - target position (in encoder tics) set by next signed long integer. Successive
  *            (whitespace-separated) numbers change the target location.
  *       cu - Unity control mode - new velocity = target velocity at each update. Note that unity control doesn't do
  *            anything when presented with a step target (ps), because step paths leave velocity = 0.
  *       cb - Bang-Bang control mode - steps are directly fired based upon position error.
+ *       cl - legacy (open-loop) control mode - IMC stock code is used. This is really implemented by turning off
+ *            control and setting stepper_hooks.c:old_stepper_mode = true. This is only available when the system mode
+ *            is IMC network control mode (n).
  *
  *   p* - target trajectory mode - 
  *       ps - step mode. Successive whitespace-separated inputs are taken to be new position targets.
@@ -83,17 +99,21 @@
 
 #include "common.h"
 
-#include "stepper.h"
-#include "hardware.h"
+#include "stepper_hooks.h"
 #include "qdenc.h"
 #include "ctrl.h"
 #include "path.h"
+
+#include "imc/hardware.h"
+#include "imc/main_imc.h"
+#include "imc/stepper.h"
 
 typedef enum {
   SS_IDLE,
   SS_FIXED_SPEED,
   SS_MOVE_STEPS,
-  SS_CTRL       // any of the controllers
+  SS_CTRL,       // any of the controllers
+  SS_IMC          // IMC mode - listening to i2c bus for instructions
 } sys_state_e;
 
 // Global Variables ==========================================================
@@ -106,6 +126,7 @@ extern float sine_freq_base, sine_amp;
 extern uint32_t sine_count;
 extern bool force_steps_per_minute;
 extern float fault_thresh;
+extern bool old_stepper_mode;
 sys_state_e sysstate = SS_IDLE;
 float enc_tics_per_step = 1.4986;                       // encoder tics per motor (micro)step (roughly)
 float steps_per_enc_tic = 1/1.4986;                          // = 1 / enc_tics_per_step
@@ -129,6 +150,7 @@ void parse_set_param(const char *buf, uint32_t *i, uint32_t count);
 void set_enc_tics_per_step(float etps);
 
 
+// This hook is called by main at the beginning of setup.
 int main()
 {
   uint32_t next_encoder_time = 0;
@@ -137,30 +159,23 @@ int main()
   // change the cpu systic clock to only roll over every SYSTICK_UPDATE_MS milliseconds:
   SYST_RVR = (F_CPU / 1000) * (SYSTICK_UPDATE_TEN_US / 100L) - 1;
 
-  // reset the prioritization of interrupts on our chip. We'll set everything down to 3, then
-  // boost up the control interrupt to 2 AND the stepper interrupts to 1. 
-  // IRQ priorities are set using the high nibble.
-  for(uint32_t i = 0; i < NVIC_NUM_INTERRUPTS; i++)
-  {
-    NVIC_SET_PRIORITY(i, 48);
-  }
-  NVIC_SET_PRIORITY(IRQ_PIT_CH3, 32);
-  NVIC_SET_PRIORITY(IRQ_PIT_CH0, 16);
-  NVIC_SET_PRIORITY(IRQ_PIT_CH1, 16);
-
-  
-  reset_hardware();
-  initialize_stepper_state();
+  //reset_hardware();
+  //initialize_stepper_state();
   enc_Init();
   // enable motor and wait for a bit for the coils to stabilize
-  enable_stepper();
+  //enable_stepper();
+
+  imc_init();     // initialize the IMC controller
+
   delay_real(100);
   set_enc_value(0);   // zero out the encoder
 	// start up control
 	init_ctrl();
-  
 
-  while(1){
+  while(1)
+  {
+    if(SS_IMC == sysstate)
+      imc_idle();   // IMC main loop
 
     if(usb_serial_available() > 0)
     {
@@ -169,7 +184,7 @@ int main()
 
     
     if(show_encoder_time > 0 && get_systick_tenus() > next_encoder_time)
-		{
+	  {
       next_encoder_time = get_systick_tenus() + show_encoder_time * 100;
       if(get_enc_value(&value))
         sprintf(message, "'%li**\n", value);   // signal we lost track!
@@ -213,6 +228,7 @@ void parse_usb(void)
       // idle state
       sysstate = SS_IDLE;
       ctrl_enable(CTRL_DISABLED);
+      old_stepper_mode = false;
       stop_motion();
       set_steps_to_go(-1);
       moving = false;
@@ -224,39 +240,49 @@ void parse_usb(void)
       break;
     case 'f':
       sysstate = SS_FIXED_SPEED;
+      old_stepper_mode = false;
       // try to read a step frequency
       if(sscanf(buf + i, " %li%n", (long *)&foo, &read) == 1)
       {
-        sprintf(message, "'Got a %li\nBuf is %s\nread = %i\n", foo);
-        usb_serial_write(message, strlen(message));
         i += read;
         set_direction(foo > 0);
-        set_step_events_per_minute((uint32_t)fabsf(foo));
+        set_step_events_per_minute_ctrl((uint32_t)fabsf(foo));
       }
       sprintf(message, "'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
       usb_serial_write(message, strlen(message));
       enable_stepper();
       set_steps_to_go(-1);
-      execute_move();
+      start_moving();
+      moving = true;
+      break;
+    case 'n':   // IMC network mode
+      sysstate = SS_IMC;
+      
+      sprintf(message, "'IMC network mode\n");
+      usb_serial_write(message, strlen(message));
+      enable_stepper();
+      set_steps_to_go(-1);
+      start_moving();
       moving = true;
       break;
     case 'm':
       // move a specified number of steps.
+      old_stepper_mode = false;
       // try to read a number of steps to go.
       if(sscanf(buf + i, " %li%n", (long *)&foo, &read) == 1)
       {
         i += read;
         if(0 == foo) foo = 1;
         set_direction(foo > 0);
-        set_step_events_per_minute(10000);
-        set_steps_to_go(abs(foo));
+        set_step_events_per_minute_ctrl(10000);
+        set_steps_to_go((int32_t)labs((long)foo));
         
         sysstate = SS_MOVE_STEPS;
         get_enc_value(&foo2);
         sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n'  Current encoder value = %li\n", get_motor_position(), foo, foo2);
         usb_serial_write(message, strlen(message));
         enable_stepper();
-        execute_move();
+        start_moving();
         moving = true;
       }
       else
@@ -293,7 +319,7 @@ void parse_usb(void)
         {
           i += read;
           set_direction(foo > 0);
-          set_step_events_per_minute((uint32_t)abs(foo));
+          set_step_events_per_minute_ctrl((uint32_t)abs(foo));
           sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
           usb_serial_write(message, strlen(message));
         }
@@ -313,7 +339,7 @@ void parse_usb(void)
           get_enc_value(&foo2);
           sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
           usb_serial_write(message, strlen(message));
-          execute_move();
+          start_moving();
           moving = true;
         }
         break;
@@ -329,6 +355,10 @@ void parse_usb(void)
           sprintf(message, "'Stepping from %li to %li\n", foo2, foo);
           usb_serial_write(message, strlen(message));
         }
+        break;
+      case SS_IDLE :
+      case SS_IMC :
+        // nothing to do.
         break;
       }
     }
@@ -366,7 +396,7 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     ctrl_enable(CTRL_PID);
 
     enable_stepper();
-    execute_move();
+    start_moving();
     moving = true;
     break;
   case 'u':
@@ -377,7 +407,7 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     ctrl_enable(CTRL_UNITY);
 
     enable_stepper();
-    execute_move();
+    start_moving();
     moving = true;
 
     sprintf(message, "'Unity control mode.\n");
@@ -391,11 +421,34 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     ctrl_enable(CTRL_BANG);
 
     enable_stepper();
-    execute_move();
+    start_moving();
     moving = true;
 
     sprintf(message, "'Bang-bang control mode.\n");
     usb_serial_write(message, strlen(message));
+    break;
+  case 'l':
+    // Legacy control mode
+    // only available if system mode is IMC network mode.
+    if(SS_IMC == sysstate)
+    {
+      // We implement this by disabling the control module and turning
+      // on stepper_hooks.c:old_stepper_mode.
+      ctrl_enable(CTRL_DISABLED);
+
+      old_stepper_mode = true;
+
+      moving = true;
+
+      sprintf(message, "'Legacy control mode.\n");
+      usb_serial_write(message, strlen(message));
+    }
+    else
+    {
+      // complain
+      sprintf(message, "'Legacy control mode can't be used when not in IMC mode!\n");
+      usb_serial_write(message, strlen(message));
+    }
     break;
   default :
     sprintf(message, "'Unrecognized command.\n");
@@ -693,7 +746,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
         *i += read;
         if(SS_FIXED_SPEED == sysstate)
           set_direction(foo > 0);
-        set_step_events_per_minute((uint32_t)abs(foo));
+        set_step_events_per_minute_ctrl((uint32_t)abs(foo));
         parseok = true;
       }
     }

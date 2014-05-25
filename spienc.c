@@ -87,7 +87,7 @@ void enc_idle(void)
 
 // get_enc_value()
 // returns the current encoder tic index
-uint8_t get_enc_value(int32_t *value)
+uint8_t get_enc_value(volatile int32_t *value)
 {
 	*value = rollovers * ROLLOVER + (int32_t)readval + offset;
   return lost_track ? 1 : 0;

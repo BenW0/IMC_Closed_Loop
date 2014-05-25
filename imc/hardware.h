@@ -1,5 +1,6 @@
 #ifndef hardware_h
 #include <mk20dx128.h>
+#include "protocol/constants.h"
 #define hardware_h
 // All stepper control is placed on port c
 #define STEPPER_PORT(reg) GPIOC_P##reg
@@ -48,5 +49,7 @@
 void reset_hardware(void);
 // Set the data-direction, multiplexing, and pullup/down/high-z for a limit
 // pin. Also enables interrupts.
-//void configure_limit_gpio(uint32_t, imc_pullup_values, uint32_t);
+void configure_limit_gpio(uint32_t, imc_pullup_values, uint32_t);
+
+void configure_nvic(void);
 #endif

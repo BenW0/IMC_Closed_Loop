@@ -18,6 +18,8 @@
 #include <mk20dx128.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <math.h>
 
 #include <usb_serial.h>
 #include <stdio.h>

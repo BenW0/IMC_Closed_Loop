@@ -10,7 +10,7 @@ typedef enum
   CTRL_BANG         // bang-bang control mode
 } ctrl_mode;
 
-void ctrl_init(void);
+void init_ctrl(void);
 
 void ctrl_enable(ctrl_mode mode);
 

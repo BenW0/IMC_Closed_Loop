@@ -2,16 +2,7 @@
 #ifndef __path_h
 #define __path_h
 
-typedef struct {
-  int32_t length;
-  uint32_t total_length;
-  uint32_t initial_rate;
-  uint32_t nominal_rate;
-  uint32_t final_rate;
-  uint32_t acceleration;
-  uint32_t stop_accelerating;
-  uint32_t start_decelerating;
-} __attribute__ ((packed)) msg_queue_move_t;
+#include "imc/protocol/message_structs.h"
 
 // custom path definition structure
 typedef struct {
@@ -38,6 +29,6 @@ void path_custom_start(void);
 void path_sines_start(void);
 void path_sines_setfreq(float new_base_freq);
 
-void path_get_target(real *target_pos, real *target_vel, uint32_t curtime);
+void path_get_target(volatile real *target_pos, volatile real *target_vel, uint32_t curtime);
 
 #endif

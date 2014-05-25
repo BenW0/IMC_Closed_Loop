@@ -19,8 +19,10 @@
 #include "qdenc.h"
 #include "spienc.h"
 #include "path.h"
-#include "stepper.h"
+#include "stepper_hooks.h"
 #include <pin_config.h>
+#include "imc/utils.h"
+#include "imc/stepper.h"
 
 // Type Definitions ==================================================================
 typedef struct
@@ -36,12 +38,13 @@ typedef struct
 } hist_data_t;
 
 // Constants =========================================================================
-#define HIST_SIZE   2048     // have the history use ~40k of memory. Needs to be a power of 2.
+#define HIST_SIZE   2048U     // have the history use ~40k of memory. Needs to be a power of 2.
 #define FF_TARGETS 16        // Feed forward target buffer size. another ring buffer...needs to be a power of 2.
 
 // Global Variables ==================================================================
 extern float enc_tics_per_step;
 extern float steps_per_enc_tic;
+extern bool old_stepper_mode;
 float pid_kp = 0.f, pid_ki = 0.f, pid_kd = 0.f;
 float min_ctrl_vel = 0;
 float max_ctrl_vel = 1.0e6;      //maximum velocity my test motor can support consistently without stalling.
@@ -91,13 +94,13 @@ void init_ctrl(void)
   ctrl_enable(CTRL_DISABLED); // disable the timer which ctrl_set_period just enabled
 	
 	// Controller heartbeat (for checking clock regularity)
-	GPIOD_PDDR |= (1<<3);
-	PORTD_PCR3 = STANDARD_OUTPUT;
+	//GPIOD_PDDR |= (1<<3);
+	//PORTD_PCR3 = STANDARD_OUTPUT;
 
   // clear the history ringbuffer
-  memset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
-  memset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
-  memset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
+  vmemset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
+  vmemset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
+  vmemset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
 }
 
 // Sets the frequency of the controller update
@@ -127,18 +130,20 @@ void ctrl_enable(ctrl_mode newmode)
 {
   if(newmode != CTRL_DISABLED)
   {
+    // turn off legacy contol mode (if it was enabled)
+    old_stepper_mode = false;
     // need to clear PID variables to avoid major issues
     pid_i_sum = 0;
     get_enc_value(&last_encpos);
     last_vel = 0;
     ctrl_integrator = 0;
     ff_target_head = 0;
-    memset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
-    memset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
+    vmemset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
+    vmemset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
     // if the mode has changed, reset the history buffer
     if(newmode != mode)
     {
-      memset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
+      vmemset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
       hist_head = 0;
       hist_time_offset = get_systick_tenus();   // so we don't have some 0's and then stuff way off in time at the same time
     }
@@ -148,7 +153,7 @@ void ctrl_enable(ctrl_mode newmode)
     if(CTRL_BANG == newmode)
     {
       // turn "off" the motor update period
-      set_step_events_per_minute(1);
+      set_step_events_per_minute_ctrl(1);
     }
   }
   else    // disable control
@@ -171,7 +176,7 @@ void output_history(void)
   // start at the tail and write to the end of the buffer, then catch back up to the head
   // (which may move...)
   old_head_loc = hist_head;
-  sprintf(message, "%lu\n", HIST_SIZE);   // # of entries we're going to print
+  sprintf(message, "%u\n", HIST_SIZE);   // # of entries we're going to print
   usb_serial_write(message, strlen(message));
   // the serial port can't take all this data at once, so we'll give it to them in bites...
   for(uint32_t chunk = old_head_loc + 1; chunk < HIST_SIZE - 1; chunk += 100)
@@ -198,7 +203,7 @@ void pit3_isr(void)
   real pos_error_deriv = 0.f;
 	
 	// Update the controller heartbeat
-	GPIOD_PTOR = (1<<3);
+	//GPIOD_PTOR = (1<<3);
 
 	// get the current system tick timer so we can add the time it takes to do the loop update into the update frequency
 	// remember, the timer counts down.
@@ -286,7 +291,7 @@ void pit3_isr(void)
   {
     // don't do this when we're in bang mode...it does it internally.
     set_direction(ctrl_out > 0.f ? true : false);
-    set_step_events_per_minute((uint32_t)abs((int32_t)floorf(ctrl_out)));
+    set_step_events_per_minute_ctrl((uint32_t)abs((int32_t)floorf(ctrl_out)));
   }
   
   // get the path target location (encoder tics) and velocity (encoder tics/minute) for the NEXT update (even including feedforward).
@@ -412,4 +417,5 @@ bool fault_check(real encpos, real cmdpos, real *pos_error_deriv)
   }
 
   last_cmdpos = cmdpos;
+  return retval;
 }
