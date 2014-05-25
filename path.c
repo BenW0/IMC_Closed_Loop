@@ -188,8 +188,9 @@ void path_get_target(real *target_pos, real *target_vel, uint32_t curtime)
     *target_vel = 0;
     for(uint32_t i = 0; i < sine_count; i++)
     {
-      *target_pos += sine_amp * sinf(sine_freqs[i] * elapsed_time + sine_shifts[i]);
-      *target_vel += sine_amp * sine_freqs[i] * cosf(sine_freqs[i] * elapsed_time + sine_shifts[i]);
+      float t = fmodf(elapsed_time, 2*PI / sine_freqs[i]);
+      *target_pos += sine_amp * sinf(sine_freqs[i] * t + sine_shifts[i]);
+      *target_vel += sine_amp * sine_freqs[i] * cosf(sine_freqs[i] * t + sine_shifts[i]);
     }
     // convert from target_vel being in steps/tenus to steps/min
     *target_vel *= 6000000.f;

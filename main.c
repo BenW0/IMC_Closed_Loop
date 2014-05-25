@@ -59,6 +59,7 @@
  *      kd - PID derivative constant
  *      km - control to position instead of velocity (int32 but represents a boolean - 1 means on, 0 means off)
  *      kf - feedforward time advance (in update steps - uint32)
+ *      kt - fault detection threshhold - change in tics/update of the error between commanded position and actual position.
  *    t - encoder tic count (int32)
  *    m* - motor parameters.
  *      mp - step position (int32)
@@ -104,6 +105,7 @@ extern uint32_t ctrl_feedforward_advance;
 extern float sine_freq_base, sine_amp;
 extern uint32_t sine_count;
 extern bool force_steps_per_minute;
+extern float fault_thresh;
 sys_state_e sysstate = SS_IDLE;
 float enc_tics_per_step = 1.4986;                       // encoder tics per motor (micro)step (roughly)
 float steps_per_enc_tic = 1/1.4986;                          // = 1 / enc_tics_per_step
@@ -553,6 +555,11 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
       sprintf(message, "%lu\n", ctrl_feedforward_advance);
       usb_serial_write(message, strlen(message));
       break;
+    case 't':
+      // fault threshold
+      sprintf(message, "%f\n", fault_thresh);
+      usb_serial_write(message, strlen(message));
+      break;
     }
     break;
 
@@ -729,7 +736,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       }
       break;
     case 'm':
-      // kd - derivative constant
+      // km - control to position mode
       if(sscanf(buf + *i, " %lu%n", &foo, &read) == 1)
       {
         *i += read;
@@ -743,6 +750,15 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       {
         *i += read;
         ctrl_feedforward_advance = foo;
+        parseok = true;
+      }
+      break;
+    case 't':
+      // kt - fault threshold
+      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
+      {
+        *i += read;
+        fault_thresh = fabsf(ffoo);
         parseok = true;
       }
       break;

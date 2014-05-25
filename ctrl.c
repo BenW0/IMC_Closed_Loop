@@ -27,7 +27,8 @@ typedef struct
 {
   uint32_t time;
   int32_t position;
-  float velocity;
+  //float velocity;
+  float pos_error_deriv;
   float cmd_velocity;
   float target_pos;
   float target_vel;
@@ -44,8 +45,13 @@ extern float steps_per_enc_tic;
 float pid_kp = 0.f, pid_ki = 0.f, pid_kd = 0.f;
 float min_ctrl_vel = 0;
 float max_ctrl_vel = 1.0e6;      //maximum velocity my test motor can support consistently without stalling.
-bool pos_ctrl_mode = false;       // controllers output new position target which gets converted to velocity.
+bool pos_ctrl_mode = true;       // controllers output new position target which gets converted to velocity.
 uint32_t ctrl_feedforward_advance = 0;
+float fault_thresh = 10.f;        // change in error between commanded and actual position that triggers a fault condition.
+real osac_As[10] = {0., 0.};      // A is assumed monic, so all we store is A1..A10
+real osac_Bs[10] = {1.};          // B is not monic, so we store B0..B9
+uint32_t osac_Acount = 2, osac_Bcount = 1;
+
 
 // Local Variables ===================================================================
 static ctrl_mode mode = CTRL_DISABLED;
@@ -63,7 +69,6 @@ static volatile real ff_target_pos_buf[FF_TARGETS];
 static volatile real ff_target_vel_buf[FF_TARGETS];
 static volatile uint32_t ff_target_head = 0;
 
-
 // PID variables
 static volatile float pid_i_sum = 0.f;
 
@@ -71,6 +76,7 @@ static volatile float pid_i_sum = 0.f;
 void set_update_cycles(uint32_t cycles);
 real pid_ctrl(real dt, real target_pos, real target_vel, real encpos, real lastvel);
 void bang_ctrl(real dt, real target_pos, real target_vel, real encpos);
+bool fault_check(real encpos, real cmdpos, real *pos_error_deriv);
 
 // Initializes the PIT timer used for control
 void init_ctrl(void)
@@ -189,6 +195,7 @@ void pit3_isr(void)
 	uint32_t old_systic, new_systic, time_of_update;
 	int32_t encpos, motorpos;
   real target_pos, target_vel, ctrl_out;
+  real pos_error_deriv = 0.f;
 	
 	// Update the controller heartbeat
 	GPIOD_PTOR = (1<<3);
@@ -213,12 +220,16 @@ void pit3_isr(void)
   {
   case CTRL_UNITY :
     if(pos_ctrl_mode)
-      ctrl_out = 0;   // no control signal
+      ctrl_out = target_pos;
     else
       ctrl_out = target_vel;
     break;
   case CTRL_PID :
     ctrl_out = pid_ctrl(ctrl_period_sec, target_pos, target_vel, encpos, last_vel);
+    if(pos_ctrl_mode)
+    {
+      ctrl_out += ff_target_pos_buf[ff_target_head];   // use the advanced feedforward target here to null out the system lag.
+    }
     break;
   case CTRL_BANG :
     bang_ctrl(ctrl_period_sec, target_pos, target_vel, encpos);
@@ -241,7 +252,13 @@ void pit3_isr(void)
     // integrate ctrl_out:
     //ctrl_integrator += ctrl_out * ctrl_period_sec;
     //ctrl_out = ctrl_integrator;
-    ctrl_out += ff_target_pos_buf[ff_target_head];   // use the advanced feedforward target here to null out the system lag.
+    // check for faults - compare this target motor position with the actual motor position.
+    if(fault_check(encpos, ctrl_out, &pos_error_deriv))
+    {
+      // We have a fault! Do something intelligent!!!! //||\\!!!
+      //sprintf(message, "Fault detected!\n");
+      //usb_serial_write(message, strlen(message));
+    }
     ctrl_out = -((real)motorpos * enc_tics_per_step - ctrl_out) / ctrl_period_sec * 60;    // see notebook, 5/7/14
   }
 
@@ -257,7 +274,8 @@ void pit3_isr(void)
   hist_data[hist_head].position = encpos;
   hist_data[hist_head].target_pos = target_pos;
   hist_data[hist_head].target_vel = target_vel;
-  hist_data[hist_head].velocity = last_vel;
+  //hist_data[hist_head].velocity = last_vel;
+  hist_data[hist_head].pos_error_deriv = pos_error_deriv;
   hist_data[hist_head].cmd_velocity = ctrl_out;
 
 
@@ -355,5 +373,43 @@ void bang_ctrl(real dt, real target_pos, real target_vel, real encpos)
   }
 }
 
+// One step ahead controller
+// computes the control law based on the encoder value we want to have one step from now. Note that this only
+// works well because we have an input/output delay of 1.
+// target_pos_next is the target position at t+1
+// right now, it can only handle systems with a single, z^0 term in the numerator and a 2nd order system.
+real osac_ctrl(real target_pos_next, real encpos)
+{
+  static real y_hist[16] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+  static real u_hist[16] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+  // F0 = Identity because delay d = 1.
+  // G_i = A_(i+1)
+  
+}
 
 
+
+// Fault check
+// Looks for significant changes in the error between the motor command position (coming out of the controller)
+// and the actual encoder position. Returns true if a fault has been detected, and sets the pos_error_deriv parameter
+// to the calculated error change.
+bool fault_check(real encpos, real cmdpos, real *pos_error_deriv)
+{
+  static real last_cmdpos = -12345.f;
+  static real last_pos_delta = -1.f;
+  bool retval = false;
+
+  if(last_cmdpos != -12345.f)    // first datapoint will be erronious
+  {
+    real pos_delta = fabsf(encpos - last_cmdpos);
+    if(last_pos_delta != -1.f)
+    {
+      *pos_error_deriv = pos_delta - last_pos_delta;
+      if(abs(*pos_error_deriv) > fault_thresh)
+        retval = true;
+    }
+    last_pos_delta = pos_delta;
+  }
+
+  last_cmdpos = cmdpos;
+}
