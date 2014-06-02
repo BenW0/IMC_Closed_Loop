@@ -16,6 +16,7 @@
  *  - implement velocity clamping before fault check so step inputs
  *    aren't interpreted as faults.
  *  - finish implementing osac control.
+ *  - fix/re-enable the endstop cuttoffs in control_isr.c
  *
  * Pinnout: This code is developed against a Teensy 3.1 MK20DX256 chip.
  *  PB18, PB19 <--> 32, 25 - quadrature inputs
@@ -107,6 +108,7 @@
 #include "imc/hardware.h"
 #include "imc/main_imc.h"
 #include "imc/stepper.h"
+#include "imc/parameters.h"
 
 typedef enum {
   SS_IDLE,
@@ -167,10 +169,34 @@ int main()
 
   imc_init();     // initialize the IMC controller
 
+  // turn on the max endstop for testing
+  {
+    msg_set_param_t msg;
+    msg.param_id = IMC_PARAM_MAX_LIMIT_EN;
+    msg.param_value = 1;
+    handle_set_parameter(&msg);
+    msg.param_id = IMC_PARAM_MIN_LIMIT_PULLUP;
+    msg.param_value = IMC_PULLUP;
+    handle_set_parameter(&msg);
+    msg.param_id = IMC_PARAM_MAX_LIMIT_PULLUP;
+    msg.param_value = IMC_PULLUP;
+    handle_set_parameter(&msg);
+    msg.param_id = IMC_PARAM_MAX_LIMIT_INV;
+    msg.param_value = 0;
+    handle_set_parameter(&msg);
+    msg.param_id = IMC_PARAM_MIN_LIMIT_INV;
+    msg.param_value = 0;
+    handle_set_parameter(&msg);
+  }
+
+  // set up the stepper hooks into the IMC module
+  init_stepper_hooks();
+
   delay_real(100);
-  set_enc_value(0);   // zero out the encoder
+
 	// start up control
 	init_ctrl();
+  set_enc_value(0);   // zero out the encoder
 
   while(1)
   {
@@ -245,7 +271,7 @@ void parse_usb(void)
       if(sscanf(buf + i, " %li%n", (long *)&foo, &read) == 1)
       {
         i += read;
-        set_direction(foo > 0);
+        set_direction(foo < 0);
         set_step_events_per_minute_ctrl((uint32_t)fabsf(foo));
       }
       sprintf(message, "'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
@@ -273,7 +299,7 @@ void parse_usb(void)
       {
         i += read;
         if(0 == foo) foo = 1;
-        set_direction(foo > 0);
+        set_direction(foo < 0);
         set_step_events_per_minute_ctrl(10000);
         set_steps_to_go((int32_t)labs((long)foo));
         
@@ -318,7 +344,7 @@ void parse_usb(void)
         if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
         {
           i += read;
-          set_direction(foo > 0);
+          set_direction(foo < 0);
           set_step_events_per_minute_ctrl((uint32_t)abs(foo));
           sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
           usb_serial_write(message, strlen(message));
@@ -334,7 +360,7 @@ void parse_usb(void)
         if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
         {
           i += read;
-          set_direction((foo) > 0);
+          set_direction((foo) < 0);
           set_steps_to_go((uint32_t)abs(foo));
           get_enc_value(&foo2);
           sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
@@ -400,19 +426,35 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     moving = true;
     break;
   case 'u':
-    // Unity control mode
-    get_enc_value(&foo);
-    path_set_step_target(foo);
-    sysstate = SS_CTRL;
-    ctrl_enable(CTRL_UNITY);
+    {
+      // Unity control mode
+      // measure the time it takes to read the encoder, for reference.
 
-    enable_stepper();
-    start_moving();
-    moving = true;
+      uint32_t old_systic = SYST_CVR, new_systic, update_time;
 
-    sprintf(message, "'Unity control mode.\n");
-    usb_serial_write(message, strlen(message));
-    break;
+      get_enc_value(&foo);
+
+	    new_systic = SYST_CVR;
+
+	    if(new_systic < old_systic)		// counter counts down!
+		    update_time = old_systic - new_systic;
+	    else	// counter rolled over
+		    update_time = old_systic - new_systic + SYST_RVR;
+
+
+      path_set_step_target(foo);
+
+      sysstate = SS_CTRL;
+      ctrl_enable(CTRL_UNITY);
+
+      enable_stepper();
+      start_moving();
+      moving = true;
+
+      sprintf(message, "'Unity control mode.\n'Encoder read time: %f ms\n", (float)update_time * 1000.f / (float)F_BUS);
+      usb_serial_write(message, strlen(message));
+      break;
+    }
   case 'b':
     // Bang control mode
     get_enc_value(&foo);
@@ -548,9 +590,17 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   case 't':
     // encoder tic count
-    get_enc_value(&foo);
-    sprintf(message, "%li\n", (long)foo);
-    usb_serial_write(message, strlen(message));
+    if(!get_enc_value(&foo))
+    {
+      sprintf(message, "%li\n", (long)foo); //
+      usb_serial_write(message, strlen(message));
+    }
+    else
+    {
+      sprintf(message, "%li\n'Lost Track!\n", (long)foo); //
+      usb_serial_write(message, strlen(message));
+    }
+    
     break;
   case 'm':
     // motor driver parameters
@@ -745,7 +795,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       {
         *i += read;
         if(SS_FIXED_SPEED == sysstate)
-          set_direction(foo > 0);
+          set_direction(foo < 0);
         set_step_events_per_minute_ctrl((uint32_t)abs(foo));
         parseok = true;
       }

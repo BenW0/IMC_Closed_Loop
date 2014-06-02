@@ -10,7 +10,7 @@ parameters_t parameters;
 void reset_parameters(void){
   parameters.error_low = 0;
   parameters.error_high = 0;
-  parameters.homing = ENABLE_MIN; // Don't flip, home low, no software max, don't invert
+  parameters.homing = ENABLE_MIN; // Don't flip, home low, no software max, no invert
   parameters.min_pos = 0;
   parameters.max_pos = 0;
 

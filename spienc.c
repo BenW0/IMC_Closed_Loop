@@ -23,20 +23,22 @@
  
 // Constants =================================================
 const uint32_t ROLLOVER = 4096;                 // rollover of the internal SPI counter
-const uint32_t MS_BEFORE_LOST_TRACK = 6;       // If we don't get an update at least this often, we may lose track of the counter rollover (2 mm / 400 mm/sec)
+//const uint32_t TENUS_BEFORE_LOST_TRACK = 600;       // If we don't get an update at least this often, we may lose track of the counter rollover (2 mm / 400 mm/sec)
+#define DISP_BEFORE_LOST_TRACK    1500          // If the encoder value has changed by more than this, we might have skipped a step!
 
 // Global Variables ==========================================
 
  
 // Local Variables ===========================================
 static volatile long encoder_offset = 0;   // added to the actual encoder value when read.
-static char message[100] = "Hello, World";
-static uint32_t last_update_millis = 0, readval, last_readval = 0;
+static char message[100];
+static uint32_t last_update_tenus = 0, readval, last_readval = 0;
 static int32_t rollovers = 0;
 static bool lost_track = true;
 static int32_t offset = 0;
 
 // Local Function Defines ====================================
+void read_enc(void);
 uint8_t read_spi(uint32_t *value);
  
 
@@ -45,7 +47,7 @@ uint8_t read_spi(uint32_t *value);
 void enc_Init(void)
 {
   spififo_begin(10, SPI_CLOCK_1MHz, SPI_MODE2);
-  last_update_millis = get_systick_tenus() * 100;
+  last_update_tenus = get_systick_tenus();
 
   if(read_spi(&readval))
   {
@@ -58,6 +60,14 @@ void enc_Init(void)
 // idle task for the encoder. We use this to keep track of rollovers
 void enc_idle(void)
 {
+  read_enc();
+}
+
+// this function reads the encoder and traps rollovers.
+void read_enc(void)
+{
+  uint32_t time = get_systick_tenus();
+  bool rolled = false;
   if(!read_spi(&readval))
 		{
 			// check for rollover
@@ -65,12 +75,25 @@ void enc_idle(void)
 			{
 				// rolled over negative
 				rollovers--;
+        rolled = true;
 			}
-			if(readval < ROLLOVER / 4 && last_readval > ROLLOVER * 3 / 4)
+			else if(readval < ROLLOVER / 4 && last_readval > ROLLOVER * 3 / 4)
 			{
 				// rolled over positive
 				rollovers++;
+        rolled = true;
 			}
+      // check for high absolute change --> possibility of skipping a step.
+      if(labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)) > DISP_BEFORE_LOST_TRACK)
+      {
+        if(!lost_track)
+        {
+          sprintf(message, "'High Enc Change: %u. Time change = %u\n", labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), time - last_update_tenus);
+          usb_serial_write(message, strlen(message));
+        }
+        lost_track = true;
+      }
+
 			last_readval = readval;
 		}
   else
@@ -78,10 +101,7 @@ void enc_idle(void)
     // something's wrong! Assume we lost track
     lost_track = true;
   }
-  // has it been too long since we had an update?
-  if(get_systick_tenus() - last_update_millis > MS_BEFORE_LOST_TRACK)
-    lost_track = true;
-  last_update_millis = get_systick_tenus() * 100;
+  last_update_tenus = time;
 }
 
 
@@ -89,6 +109,7 @@ void enc_idle(void)
 // returns the current encoder tic index
 uint8_t get_enc_value(volatile int32_t *value)
 {
+  read_enc();
 	*value = rollovers * ROLLOVER + (int32_t)readval + offset;
   return lost_track ? 1 : 0;
 }
@@ -97,7 +118,7 @@ uint8_t get_enc_value(volatile int32_t *value)
 // sets the current encoder tic index (by offsetting the current value)
 void set_enc_value(int32_t newvalue)
 {
-  offset = newvalue - rollovers * ROLLOVER + (int32_t)readval;
+  offset = newvalue - rollovers * ROLLOVER - (int32_t)readval;
   lost_track = false;
 }
 
@@ -107,10 +128,15 @@ uint8_t read_spi(uint32_t *value)
 {
 	uint8_t i;
 	// write out some uint8_ts...The content is bogus, we just need the clock to fire.
+  // we need to block the control interrupt from firing while we read the serial port (if it fires half way through
+  // reading, we'll be in big trouble!)
+  SET_BASEPRI(2<<4);
 	spififo_write16(0x1234, 1);
 	spififo_write16(0x1234, 0);
 	uint32_t inp = spififo_read();
 	uint32_t inp2 = spififo_read();
+  CLEAR_BASEPRI();
+
 	inp = (inp << 16) | inp2;
 	// first bit (msb) is garbage
 	inp &= 0x7fffffff;
@@ -129,7 +155,11 @@ uint8_t read_spi(uint32_t *value)
 		if(inp & (1 << i)) parcheck ^= 1;
 	// valid packet if ocf = 1, cof = 0, lin = 0, mag_inc = 0, mag_dec = 0, parcheck == par.
 	if(!ocf || cof || lin || mag_inc || mag_dec || parcheck != par)
+  {
+    sprintf(message, "'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
+    usb_serial_write(message,strlen(message));
 		return 1;
+  }
 	*value = rd;
 	return 0;
 }

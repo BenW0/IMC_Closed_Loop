@@ -109,9 +109,9 @@ static void set_step_events_per_minute(uint32_t steps_per_minute)
 }
 
 // new routine to allow module-level access to direction
-void set_direction(bool forward)
+void set_direction(bool backwards)
 {
-	out_dir = (uint32_t)forward;
+	out_dir = (uint32_t)backwards;
   // set the direction NOW. Needed for bang-bang control.
   STEPPER_PORT(DOR) = (STEPPER_PORT(DOR) & ~DIR_BIT) | (out_dir ? DIR_BIT : 0);
 }
@@ -164,8 +164,6 @@ void pit0_isr(void) {
   if (st.counter > 0) {
     out_step = 1;
     st.counter -= st.event_count;
-    if (out_dir) { st.position--; }
-    else { st.position++; }
   }
   st.step_events_completed++; // Iterate step events
 
@@ -249,6 +247,8 @@ inline void trigger_pulse(void){
   PIT_LDVAL1 = pit1_state.pulse_length;
 #endif
   PIT_TCTRL1 |= TEN;
+  if (out_dir) { st.position--; }
+    else { st.position++; }
 }
 
 void pit1_isr(void){

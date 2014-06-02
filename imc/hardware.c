@@ -79,7 +79,7 @@ void configure_nvic(void){
     NVIC_SET_PRIORITY(i, 3<<4);
   }
   // control ISR
-  NVIC_SET_PRIORITY(IRQ_PIT_CH3, 2<<4);
+  NVIC_SET_PRIORITY(IRQ_PIT_CH3, 2<<4);       // this priority level is explicity used in spienc.c:read_spi()
 
   // Limits/sync and pin toggle/reset isr get the highest priority
   NVIC_SET_PRIORITY(IRQ_PORTB, 0);

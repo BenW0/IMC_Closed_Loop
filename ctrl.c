@@ -140,6 +140,7 @@ void ctrl_enable(ctrl_mode newmode)
     ff_target_head = 0;
     vmemset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
     vmemset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
+    //||\\!! TODO: Re-fill the target pos buf with a first value?
     // if the mode has changed, reset the history buffer
     if(newmode != mode)
     {
@@ -150,11 +151,11 @@ void ctrl_enable(ctrl_mode newmode)
 
     set_update_cycles(ctrl_period_cycles);
 
-    if(CTRL_BANG == newmode)
-    {
-      // turn "off" the motor update period
-      set_step_events_per_minute_ctrl(1);
-    }
+    //if(CTRL_BANG == newmode)
+    //{
+    // turn "off" the motor update period. Needed in case the step rate was very high.
+    set_step_events_per_minute_ctrl(1);
+    //}
   }
   else    // disable control
     PIT_TCTRL3 &= ~PIT_TCTRL_TEN_MASK;
@@ -290,7 +291,7 @@ void pit3_isr(void)
   if(mode != CTRL_BANG)
   {
     // don't do this when we're in bang mode...it does it internally.
-    set_direction(ctrl_out > 0.f ? true : false);
+    set_direction(ctrl_out > 0.f ? false : true);
     set_step_events_per_minute_ctrl((uint32_t)abs((int32_t)floorf(ctrl_out)));
   }
   
@@ -364,13 +365,13 @@ void bang_ctrl(real dt, real target_pos, real target_vel, real encpos)
   {
     if(encpos < target_pos)
     {
-      set_direction(true);
+      set_direction(false);
       //sprintf(message, "enc: %f target: %f diff: %f FORWARD\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
       //usb_serial_write(message, strlen(message));
     }
     else
     {
-      set_direction(false);
+      set_direction(true);
       //sprintf(message, "enc: %f target: %f diff: %f BACKWARDS\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
       //usb_serial_write(message, strlen(message));
     }

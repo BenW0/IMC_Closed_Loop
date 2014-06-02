@@ -9,9 +9,6 @@ int32_t get_steps_to_go(void);
 // set step rate
 void set_step_events_per_minute_ctrl(uint32_t); 
 uint32_t get_step_events_per_minute(void);
-// set direction
-void set_direction(bool);
-bool get_direction(void);
 // start motion (like execute_move(), but does not dequeue a move since we're not in IMC mode.
 void start_moving(void);
 #endif

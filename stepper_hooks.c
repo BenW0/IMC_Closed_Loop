@@ -4,6 +4,7 @@
 
 #include "imc/hardware.h"
 #include "imc/stepper.h"
+#include "imc/parameters.h"
 
 
 // Global Variables ==================================================================
@@ -12,8 +13,9 @@ bool old_stepper_mode = false;      // use stock IMC stepper isr code.
 // Local Variables ===================================================================
 volatile int32_t steps_to_go = -1;
 static uint32_t old_steps_per_minute = MINIMUM_STEPS_PER_MINUTE;
-static uint32_t new_cycles_per_step_event;
+static uint32_t new_cycles_per_step_event = MINIMUM_STEPS_PER_MINUTE;
 bool force_steps_per_minute = true;   // force the stepper module to reset its counter ever update?
+static char message[100];
 
 // Function Predeclares ==============================================================
 bool step_hook();
@@ -74,9 +76,34 @@ bool step_hook(void) {
   // should we keep legacy open-loop behavior?
   if(old_stepper_mode)
     return false;     // have the isr continue with stock IMC code
+  
 
-  // fire a step
-  trigger_pulse();
+  // check for end stop states (this needed as a safety net for testing) //||\\!
+  if(get_direction())   // going forward?
+  {
+    // logic: Trigger a pulse if we are going forward, and
+    // if the endstop is not enabled, step anyway.
+    // if the endstop pin matches the invert flag, we can step.
+    if(!(parameters.homing & ENABLE_MAX) || (((CONTROL_PORT(DIR) & MAX_LIMIT_BIT) ? 1 : 0) == (parameters.homing & INVERT_MAX ? 1 : 0)))
+      trigger_pulse();
+    else
+    {
+      // the endstop is asserted.
+      sprintf(message, "'Max Endstop Assert!\n");
+      usb_serial_write(message, strlen(message));
+    }
+  }
+  else    // going backwards
+  {
+    if(!(parameters.homing & ENABLE_MIN) || (((CONTROL_PORT(DIR) & MIN_LIMIT_BIT) ? 1 : 0) == (parameters.homing & INVERT_MIN ? 1 : 0)))
+      trigger_pulse();
+    else
+    {
+      // the endstop is asserted.
+      sprintf(message, "'Min Endstop Assert!\n");
+      usb_serial_write(message, strlen(message));
+    }
+  }
 
 
   // are we out of steps on a steps-limited move?

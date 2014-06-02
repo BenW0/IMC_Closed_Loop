@@ -51,7 +51,7 @@ void set_execute_hook(bool (*exechook)(void));
 // sets the step frequency
 uint32_t config_step_timer(uint32_t cycles);
 // direction commands
-void set_direction(bool forward);
+void set_direction(bool backwards);
 bool get_direction(void);
 // Power up the stepper motor
 void enable_stepper(void);

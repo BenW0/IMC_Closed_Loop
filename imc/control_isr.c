@@ -19,20 +19,20 @@ void portb_isr(void){
     }
   }
   
-
+  //||\\!! TODO: This safety feature disabled for now because I have a gentler handling in stepper_hook.
   if(MIN_LIMIT_CTRL & ISF){
     if(parameters.homing &  ENABLE_MIN){
-      stop_motion();
-      st.state = STATE_ERROR;
-      parameters.error_low = IMC_ERR_MECHANICAL;
+      //stop_motion();
+      //st.state = STATE_ERROR;
+      //parameters.error_low = IMC_ERR_MECHANICAL;
     }
     MIN_LIMIT_CTRL |= ISF;
   }
   if(MAX_LIMIT_CTRL & ISF){
     if(parameters.homing &  ENABLE_MAX){
-      stop_motion();
-      st.state = STATE_ERROR;
-      parameters.error_low = IMC_ERR_MECHANICAL;
+      //stop_motion();
+      //st.state = STATE_ERROR;
+      //parameters.error_low = IMC_ERR_MECHANICAL;
     }
     MAX_LIMIT_CTRL |= ISF;
   }

@@ -27,7 +27,7 @@
 
 // This define controls whether to use the QD-input or the SPI-input encoder. Disable
 // to use the SPI-based encoder
-#define USE_QD_ENC
+//#define USE_QD_ENC
 
 // datatype used for control functions (for future conversion to double?)
 typedef float real;
@@ -61,6 +61,15 @@ __attribute__ ((always_inline)) inline void delay_real(uint32_t ms)
   while(get_systick_tenus() < endtick)
     ;
 } 
+
+
+// The Teensy development tools don't give good access to allow masking of interrupt priorities
+// (effectively elevating the current level of execution to a more urgent (=lower #) level)
+// The following follows ARM DDI 0403D B5-805, with hints from mk20dx128.c:nvic_execution_priority.
+// The parameter pri should be of the same form used by mk20dx128.h:NVIC_SET_PRIORITY()
+#define SET_BASEPRI(pri)    asm volatile("msr basepri, %0\n" :: "r" ((pri)) : );
+#define CLEAR_BASEPRI()     asm volatile("movs r0, #0\n\
+                                          msr basepri, r0" ::: "r0");
 
 // Min and Max functions:
 //FORCE_INLINE uint8_t max8(uint8_t a, uint8_t b) {return a > b ? a : b;}
