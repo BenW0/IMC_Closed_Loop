@@ -1,4 +1,7 @@
-/* Common Header */
+/* Common Header.
+
+ * Code credit for random number generation: http://stackoverflow.com/questions/1167253/implementation-of-rand
+ */
 
 #ifndef __common_h_
 #define __common_h_
@@ -20,6 +23,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <math.h>
+#include <stdarg.h>
 
 #include <usb_serial.h>
 #include <stdio.h>
@@ -61,6 +65,13 @@ __attribute__ ((always_inline)) inline void delay_real(uint32_t ms)
   while(get_systick_tenus() < endtick)
     ;
 } 
+
+
+// Random number generator: (lfsr113)
+uint32_t rand_uint32 (void);
+
+// everyone uses the "message" variable for compiling strings to be sent to host over serial
+extern char message[200];
 
 
 // The Teensy development tools don't give good access to allow masking of interrupt priorities

@@ -15,7 +15,7 @@ volatile int32_t steps_to_go = -1;
 static uint32_t old_steps_per_minute = MINIMUM_STEPS_PER_MINUTE;
 static uint32_t new_cycles_per_step_event = MINIMUM_STEPS_PER_MINUTE;
 bool force_steps_per_minute = true;   // force the stepper module to reset its counter ever update?
-static char message[100];
+//static char message[100];
 
 // Function Predeclares ==============================================================
 bool step_hook();

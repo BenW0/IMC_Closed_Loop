@@ -31,7 +31,7 @@ const uint32_t ROLLOVER = 4096;                 // rollover of the internal SPI 
  
 // Local Variables ===========================================
 static volatile long encoder_offset = 0;   // added to the actual encoder value when read.
-static char message[100];
+//static char message[100];
 static uint32_t last_update_tenus = 0, readval, last_readval = 0;
 static int32_t rollovers = 0;
 static bool lost_track = true;
@@ -84,11 +84,11 @@ void read_enc(void)
         rolled = true;
 			}
       // check for high absolute change --> possibility of skipping a step.
-      if(labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)) > DISP_BEFORE_LOST_TRACK)
+      if(labs((rolled ? ROLLOVER : 0) - labs(last_readval - readval)) > DISP_BEFORE_LOST_TRACK)
       {
         if(!lost_track)
         {
-          sprintf(message, "'High Enc Change: %u. Time change = %u\n", labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), time - last_update_tenus);
+          sprintf(message, "'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), readval, last_readval, time - last_update_tenus);
           usb_serial_write(message, strlen(message));
         }
         lost_track = true;

@@ -16,7 +16,8 @@ typedef enum {
   PATH_STEP,
   PATH_RAMPS,
   PATH_CUSTOM,
-  PATH_SINES
+  PATH_SINES,
+  PATH_RAND
 } __attribute__ ((packed)) pathmode_t;
 
 void path_set_step_target(int32_t target);
@@ -28,6 +29,8 @@ void path_custom_start(void);
 
 void path_sines_start(void);
 void path_sines_setfreq(float new_base_freq);
+
+void path_rand_start(void);
 
 void path_get_target(volatile real *target_pos, volatile real *target_vel, uint32_t curtime);
 

@@ -25,7 +25,7 @@ volatile unsigned long isr1_count = 0, isr2_count = 0;
  
 // Local Variables ===========================================
 static volatile long encoder_offset = 0;   // added to the actual encoder value when read.
-static char message[100] = "Hello, World";
+//static char message[100] = "Hello, World";
  
 /********************************************************************************
  *   QEI_Init: Initializes FTM2 module for QD w/Index thru CMP1

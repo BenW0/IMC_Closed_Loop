@@ -48,6 +48,11 @@
  *       cl - legacy (open-loop) control mode - IMC stock code is used. This is really implemented by turning off
  *            control and setting stepper_hooks.c:old_stepper_mode = true. This is only available when the system mode
  *            is IMC network control mode (n).
+ *       cd - DARMA control mode. Uses a control structure derived from Astrom & Wittenmark's Self-Tuning Controller,
+ *            (although the controller is not self-tuning in this implementation)
+ *       cc - Compensating filter control mode. Uses a set of IIR digital filters in a feedback loop to enhance
+ *            controller performance. This method will likely introduce lag, which can be compensated for by advancing
+ *            the control signal.
  *
  *   p* - target trajectory mode - 
  *       ps - step mode. Successive whitespace-separated inputs are taken to be new position targets.
@@ -60,6 +65,7 @@
  *                between the entries pushed to the buffer with pcp, counting time from the moment this command was received.
  *          pcc - clears the custom path buffer.
  *       pq - sine mode. Generates position and velocity targets from five summed sine waves.
+ *       pr - random path mode. Generates a random path, keeping successive datapoints less than max vel (param a)
  * 
  *  Parameter commands:
  *   gX - gets parameter X's value
@@ -71,23 +77,34 @@
  *    f - current move frequency (in fixed mode, this is the last number entered) (int32)
  *    i - mInimum velocity allowed for controller output. Any velocity output by the controller below this value clamps to 0.
  *    k* - Controller parameters:
- *      kp - PID proportional constant
- *      ki - PID integral constant
- *      kd - PID derivative constant
+ *      kp* - PID control parameters
+ *        kpp - PID proportional constant
+ *        kpi - PID integral constant
+ *        kpd - PID derivative constant
  *      km - control to position instead of velocity (int32 but represents a boolean - 1 means on, 0 means off)
  *      kf - feedforward time advance (in update steps - uint32)
  *      kt - fault detection threshhold - change in tics/update of the error between commanded position and actual position.
+ *      ku - controller update period (in ms)
+ *      kd* - DARMA control parameters
+ *        kdr - DARMA control R vector. See notes in ctrl.c:darma_ctrl() for details
+ *        kds - DARMA control S vector
+ *        kdt - DARMA control T vector
+ *      kc* - Compensating controller parameters
+ *        kcn - C numerator - vector of coeficients for the C filter numerator (starting with z^0 and progressing towards z^-n)
+ *        kcd - C denominator - vector of coefficients of the C filter denominator (starting with z^-1 and progressing towards z^-n)
+ *        kco - F numerator - vector of coeficients for the F filter numerator (starting with z^0 and progressing towards z^-n)
+ *        kcf - F denominator - vector of coefficients of the F filter denominator (starting with z^-1 and progressing towards z^-n)
  *    t - encoder tic count (int32)
  *    m* - motor parameters.
  *      mp - step position (int32)
  *      mf - force step counter reset whenever the step events per minute function is called. (int32 but represents a boolean - 1 means on, 0 means off)
  *    o - occasionally output encoder value. Value specifies the number of ms between reporting. 0 = off (uint)
- *    p - controller update period (in ms)
+ *    p* - path parameters
+ *      pc - number of sines (1-5, int)
+ *      pf - sine frequency base - rad/tenus
+ *      pa - sine amplitude (tics)
+ *      pr - random path move amplitude (0->1 scalar, normalized against ctrl max vel)
  *    q - encoder tics per step (float)
- *    s* - sine path mode parameters:
- *      sc - number of sines (1-5, int)
- *      sf - sine frequency base - rad/tenus
- *      sa - sine amplitude (tics)
  *    u - last controller update time (in ms), read only
  *
  *  Note: Responses meant to be human-readible (i.e. Debug strings for ctrl_design_gui) start with an apostrophe (')
@@ -124,22 +141,31 @@ extern float pid_kp, pid_ki, pid_kd;
 extern float max_ctrl_vel, min_ctrl_vel;
 extern bool pos_ctrl_mode;
 extern uint32_t ctrl_feedforward_advance;
-extern float sine_freq_base, sine_amp;
+extern float sine_freq_base, sine_amp, rand_scale;
 extern uint32_t sine_count;
 extern bool force_steps_per_minute;
 extern float fault_thresh;
 extern bool old_stepper_mode;
+extern real darma_R[FILTER_MAX_SIZE];
+extern real darma_S[FILTER_MAX_SIZE];
+extern real darma_T[FILTER_MAX_SIZE];
+extern real comp_C_num[FILTER_MAX_SIZE];
+extern real comp_C_den[FILTER_MAX_SIZE - 1];
+extern real comp_F_num[FILTER_MAX_SIZE];
+extern real comp_F_den[FILTER_MAX_SIZE - 1];
+
+char message[200];
 sys_state_e sysstate = SS_IDLE;
-float enc_tics_per_step = 1.4986;                       // encoder tics per motor (micro)step (roughly)
-float steps_per_enc_tic = 1/1.4986;                          // = 1 / enc_tics_per_step
+float enc_tics_per_step = 21.7343;//1.4986;                       // encoder tics per motor (micro)step (roughly)
+float steps_per_enc_tic = 1/21.7343;//1/1.4986;                          // = 1 / enc_tics_per_step
 
 volatile uint32_t systick_tenus_count;     // millisecond counter which updates every SYSTICK_UPDATE_MS ms.
 volatile uint32_t csr_last;
-volatile bool systick_rollover_handled = false;   // flag to tell the isr we already trapped this one.
+
 
 
 // Local Variables ===========================================================
-static char message[100] = "Hello, World";
+static char msg_build[30];
 static uint32_t show_encoder_time = 0;
 static bool moving = false;
 
@@ -198,6 +224,7 @@ int main()
 	init_ctrl();
   set_enc_value(0);   // zero out the encoder
 
+
   while(1)
   {
     if(SS_IMC == sysstate)
@@ -228,7 +255,7 @@ int main()
       moving = false;
     }
 #ifndef USE_QD_ENC
-    enc_idle();
+    //enc_idle();
 #endif
   }
 }
@@ -492,6 +519,41 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
       usb_serial_write(message, strlen(message));
     }
     break;
+  case 'd':
+    // Darma control mode
+    
+    get_enc_value(&foo);
+
+    path_set_step_target(foo);
+
+    sysstate = SS_CTRL;
+    ctrl_enable(CTRL_DARMA);
+
+    enable_stepper();
+    start_moving();
+    moving = true;
+
+    sprintf(message, "'DARMA control mode.\n");
+    usb_serial_write(message, strlen(message));
+    
+    break;
+  case 'c':
+    // Compensating filter control mode
+    
+    get_enc_value(&foo);
+
+    path_set_step_target(foo);
+
+    sysstate = SS_CTRL;
+    ctrl_enable(CTRL_COMP);
+
+    enable_stepper();
+    start_moving();
+    moving = true;
+
+    serial_printf("'Compensating control mode.\n");
+    
+    break;
   default :
     sprintf(message, "'Unrecognized command.\n");
     usb_serial_write(message, strlen(message));
@@ -564,11 +626,25 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
   case 'q':   // pq - sine mode
     path_sines_start();
     break;
+  case 'r':   // pr - random mode
+    path_rand_start();
+    break;
   default :
     sprintf(message, "'Unrecognized command.\n");
     usb_serial_write(message, strlen(message));
     break;
   }
+}
+
+// helper function for parse_get_param. Writes a single value of type typecode (i.e. for printf - %f, %i, etc)
+// to the serial console. Note this is basically a simplified wrapper on printf that only allows one parameter.
+void serial_printf(const char *str, ...)
+{
+  va_list args;
+  va_start(args, str);
+  vsprintf(message, str, args);
+  usb_serial_write(message, strlen(message));
+  va_end(args);
 }
 
 // Parses a Get Parameter message
@@ -580,25 +656,21 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
   {
   case 'a':
     // maximum control value
-    sprintf(message, "%f\n", max_ctrl_vel);
-    usb_serial_write(message, strlen(message));
+    serial_printf("%f\n", max_ctrl_vel);
     break;
   case 'i':
     // minimum control value
-    sprintf(message, "%f\n", min_ctrl_vel);
-    usb_serial_write(message, strlen(message));
+    serial_printf("%f\n", min_ctrl_vel);
     break;
   case 't':
     // encoder tic count
     if(!get_enc_value(&foo))
     {
-      sprintf(message, "%li\n", (long)foo); //
-      usb_serial_write(message, strlen(message));
+      serial_printf("%li\n", (long)foo); //
     }
     else
     {
-      sprintf(message, "%li\n'Lost Track!\n", (long)foo); //
-      usb_serial_write(message, strlen(message));
+      serial_printf("%li\n'Lost Track!\n", (long)foo); //
     }
     
     break;
@@ -608,97 +680,183 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     {
     case 'f':
       // mf - force counter reset on update
-      sprintf(message, "%li\n", (long)force_steps_per_minute);
-      usb_serial_write(message, strlen(message));
+      serial_printf("%li\n", (long)force_steps_per_minute);
       break;
     case 'p':
       // mp - motor step position
-      sprintf(message, "%li\n", (long)get_motor_position());
-      usb_serial_write(message, strlen(message));
+      serial_printf("%li\n", (long)get_motor_position());
       break;
     }
     break;
 
   case 'f':
     // current move frequency
-    sprintf(message, "%li\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
-    usb_serial_write(message, strlen(message));
+    serial_printf("%li\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
     break;
   case 'o':
     // current show encoder frequency
-    sprintf(message, "%lu\n", (unsigned long)show_encoder_time);
-    usb_serial_write(message, strlen(message));
+    serial_printf("%lu\n", (unsigned long)show_encoder_time);
     break;
   case 'k':
-    // PID control parameters
+    // Control parameters
     switch(buf[(*i)++])
     {
     case 'p':
-      // kp - proportional constant
-      sprintf(message, "%f\n", pid_kp);
-      usb_serial_write(message, strlen(message));
-      break;
-    case 'i':
-      // ki - integral constant
-      sprintf(message, "%f\n", pid_ki);
-      usb_serial_write(message, strlen(message));
-      break;
-    case 'd':
-      // kd - derivative constant
-      sprintf(message, "%f\n", pid_kd);
-      usb_serial_write(message, strlen(message));
+      // PID control parameters
+      switch(buf[(*i)++])
+      {
+      case 'p':
+        // kpp - proportional constant
+        serial_printf("%f\n", pid_kp);
+        break;
+      case 'i':
+        // kpi - integral constant
+        serial_printf("%f\n", pid_ki);
+        break;
+      case 'd':
+        // kpd - derivative constant
+        serial_printf("%f\n", pid_kd);
+        break;
+      }
       break;
     case 'm':
       // km - control to position mode
-      sprintf(message, "%i\n", pos_ctrl_mode ? 1 : 0);
-      usb_serial_write(message, strlen(message));
+      serial_printf("%i\n", pos_ctrl_mode ? 1 : 0);
       break;
     case 'f':
       // kf - feedforward advance time (update steps)
-      sprintf(message, "%lu\n", ctrl_feedforward_advance);
-      usb_serial_write(message, strlen(message));
+      serial_printf("%lu\n", ctrl_feedforward_advance);
       break;
     case 't':
       // fault threshold
-      sprintf(message, "%f\n", fault_thresh);
-      usb_serial_write(message, strlen(message));
+      serial_printf("%f\n", fault_thresh);
       break;
+    case 'u' :
+      // controller update period (in ms)
+      serial_printf("%f\n", ctrl_get_period() / 1000.f);
+      break;
+    case 'd':
+      {
+        sprintf(message, "'Get started.\n");
+        usb_serial_write(message, strlen(message));
+        // DARMA control parameters
+        real *target = NULL;
+        int32_t m = 0;
+        char foo[150];
+        switch(buf[(*i)++])
+        {
+        case 'r':
+          // kdr - R vector
+          target = darma_R;
+          break;
+        case 's':
+          // kds - S vector
+          target = darma_S;
+          break;
+        case 't':
+          // kdt - T vector
+          target = darma_T;
+          break;
+        default :
+          // didn't understand
+          sprintf(message, "Unknown command.\n");
+          usb_serial_write(message, strlen(message));
+          break;
+        }
+        if(target)
+        {
+          for(m = FILTER_MAX_SIZE - 1; m > 0; m--)
+            if(0.f != target[m])
+              break;
+          serial_printf("'m= %i.\n", (int)m);
+          message[0] = 0;
+          for(uint32_t k = 0; k <= m; k++)
+          {
+            sprintf(msg_build, "%f ", target[k]);
+            strcat(message, msg_build);
+          }
+          strcat(message, "\n");
+          usb_serial_write(message, strlen(message));
+        }
+        serial_printf("'get complete\n");
+      }
+      break;
+      
+      case 'c':
+      {
+        // Compensating control parameters
+        real *target = NULL;
+        uint8_t m = FILTER_MAX_SIZE - 1;
+        switch(buf[(*i)++])
+        {
+        case 'n':
+          // kcn - C numerator vector
+          target = comp_C_num;
+          break;
+        case 'd':
+          // kcd - C denominator vector
+          target = comp_C_den;
+          m--;
+          break;
+        case 'o':
+          // kco - F numerator vector
+          target = comp_F_num;
+          break;
+        case 'f':
+          // kcf - F denominator vector
+          target = comp_F_num;
+          m--;
+          break;
+        }
+        if(target)
+        {
+          for(; m > 0; m--)
+            if(0.f != target[m])
+              break;
+          serial_printf("'m= %i.\n", (int)m);
+          message[0] = 0;
+          for(uint32_t k = 0; k <= m; k++)
+          {
+            sprintf(msg_build, "%f ", target[k]);
+            strcat(message, msg_build);
+          }
+          strcat(message, "\n");
+          usb_serial_write(message, strlen(message));
+        }
+        serial_printf("'get complete\n");
+      }
+      break;
+
     }
     break;
 
   case 'u':
     // last controller update time
-    sprintf(message, "%f\n", ctrl_get_update_time());
-    usb_serial_write(message, strlen(message));
-    break;
-  case 'p':
-    // controller update period (in ms)
-    sprintf(message, "%f\n", ctrl_get_period() / 1000.f);
-    usb_serial_write(message, strlen(message));
+    serial_printf("%f\n", ctrl_get_update_time());
     break;
   case 'q':
     // encoder tics per step (float)
-    sprintf(message, "%f\n", enc_tics_per_step);
-    usb_serial_write(message, strlen(message));
+    serial_printf("%f\n", enc_tics_per_step);
     break;
-  case 's':
-    // sine path mode variables:
+  case 'p':
+    // path mode variables:
     switch(buf[(*i)++])
     {
     case 'c':
-      // sc - sine count
-      sprintf(message, "%lu\n", sine_count);
-      usb_serial_write(message, strlen(message));
+      // pc - sine count
+      serial_printf("%lu\n", sine_count);
       break;
     case 'f':
-      // sf - sine frequency base (hz)
-      sprintf(message, "%f\n", sine_freq_base);
-      usb_serial_write(message, strlen(message));
+      // pf - sine frequency base (hz)
+      serial_printf("%f\n", sine_freq_base);
       break;
     case 'a':
-      // sa - sine amplitude
-      sprintf(message, "%f\n", sine_amp);
-      usb_serial_write(message, strlen(message));
+      // pa - sine amplitude
+      serial_printf("%f\n", sine_amp);
+      break;
+    case 'r':
+      // pr - random move scale
+      serial_printf("%f\n", rand_scale);
       break;
     }
     break;
@@ -708,9 +866,67 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   default :
     // didn't understand!
-    sprintf(message, "'I didn't understand which parameter you want to query.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'I didn't understand which parameter you want to query.\n");
   }
+}
+
+bool read_float(const char * buf, uint32_t *i, float *value)
+{
+  uint32_t read;
+  float ffoo;
+  if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
+  {
+    *i += read;
+    *value = ffoo;
+    return true;
+  }
+  return false;
+}
+
+bool read_int(const char * buf, uint32_t *i, int32_t *value)
+{
+  uint32_t read;
+  int32_t foo;
+  if(sscanf(buf + *i, " %li%n", &foo, &read) == 1)
+  {
+    *i += read;
+    *value = foo;
+    return true;
+  }
+  return false;
+}
+
+bool read_uint(const char * buf, uint32_t *i, uint32_t *value)
+{
+  uint32_t read;
+  uint32_t foo;
+  if(sscanf(buf + *i, " %lu%n", &foo, &read) == 1)
+  {
+    *i += read;
+    *value = foo;
+    return true;
+  }
+  return false;
+}
+
+bool read_vector(const char *buf, uint32_t *i, float *vector, uint32_t size)
+{
+  uint32_t read;
+  if(vector)
+  {
+    // clear the buffer
+    vmemset((void *)vector, 0, sizeof(real) * size);
+    // load the buffer
+    for(uint32_t k = 0; k < size; k++)
+    {
+      if(sscanf(buf + *i, " %f%n", &vector[k], &read) == 1)
+        *i += read;
+      else
+        break;    // we're done!
+    }
+    return true;
+  }
+  return false;
 }
 
 // Parses a Set Parameter message
@@ -725,31 +941,17 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
   {
   case 'a':
     // maximum ctrl velocity
-    if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-    {
-      *i += read;
-      max_ctrl_vel = ffoo;
-      parseok = true;
-    }
+    parseok = read_float(buf, i, &max_ctrl_vel);
     break;
   case 'i':
     // minimum ctrl velocity
-    if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-    {
-      *i += read;
-      min_ctrl_vel = ffoo;
-      parseok = true;
-    }
+    parseok = read_float(buf, i, &min_ctrl_vel);
     break;
     
   case 't':
     // encoder tic count
-    if(sscanf(buf + *i, " %li%n", (long *)&foo, &read) == 1)
-    {
-      *i += read;
-      set_enc_value(foo);
-      parseok = true;
-    }
+    parseok = read_int(buf, i, &foo);
+    set_enc_value(foo);
     break;
     
   case 'm':
@@ -758,47 +960,28 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     {
     case 'f':
       // mf - force motor timer update
-      if(sscanf(buf + *i, " %li%n", &foo, &read) == 1)
-      {
-        *i += read;
-        force_steps_per_minute = (foo != 0);
-        parseok = true;
-      }
+      parseok = read_int(buf, i, &foo); 
+      force_steps_per_minute = (foo != 0);
       break;
     case 'p':
       // mp - Motor position
-      if(sscanf(buf + *i, " %li%n", (long *)&foo, &read) == 1)
-      {
-        *i += read;
-        set_motor_position(foo);
-        parseok = true;
-      }
-      break;
+      parseok = read_int(buf, i, &foo); 
+      set_motor_position(foo);
     }
     break;
     
   case 'o':
     // encoder readout frequency
-    if(sscanf(buf + *i, " %lu%n", (long *)&foo, &read) == 1)
-    {
-      *i += read;
-      show_encoder_time = foo;
-      parseok = true;
-    }
+    parseok = read_uint(buf, i, &show_encoder_time);
     break;
   case 'f':
     // current move frequency
     if(SS_FIXED_SPEED == sysstate || SS_MOVE_STEPS == sysstate)
     {
-      // try to read a step frequency
-      if(sscanf(buf + *i, " %li%n", (long *)&foo, &read) == 1)
-      {
-        *i += read;
-        if(SS_FIXED_SPEED == sysstate)
-          set_direction(foo < 0);
-        set_step_events_per_minute_ctrl((uint32_t)abs(foo));
-        parseok = true;
-      }
+      parseok = read_int(buf, i, &foo);
+      if(SS_FIXED_SPEED == sysstate)
+        set_direction(foo < 0);
+      set_step_events_per_minute_ctrl((uint32_t)abs(foo));
     }
     else
     {
@@ -808,113 +991,116 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     }
     break;
   case 'k':
-    // PID control parameters
+    // Control parameters
     switch(buf[(*i)++])
     {
     case 'p':
-      // kp - proportional constant
-      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
+      // PID control parameters
+      switch(buf[(*i)++])
       {
-        *i += read;
-        pid_kp = ffoo;
-        parseok = true;
-      }
-      break;
-    case 'i':
-      // ki - integral constant
-      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-      {
-        *i += read;
-        pid_ki = ffoo;
-        parseok = true;
-      }
-      break;
-    case 'd':
-      // kd - derivative constant
-      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-      {
-        *i += read;
-        pid_kd = ffoo;
-        parseok = true;
+      case 'p':
+        // kpp - proportional constant
+        parseok = read_float(buf, i, &pid_kp);
+        break;
+      case 'i':
+        // kpi - integral constant
+        parseok = read_float(buf, i, &pid_ki);
+        break;
+      case 'd':
+        // kpd - derivative constant
+        parseok = read_float(buf, i, &pid_kd);
+        break;
       }
       break;
     case 'm':
       // km - control to position mode
-      if(sscanf(buf + *i, " %lu%n", &foo, &read) == 1)
-      {
-        *i += read;
-        pos_ctrl_mode = (foo != 0);
-        parseok = true;
-      }
+      parseok = read_uint(buf, i, &foo);
+      pos_ctrl_mode = (foo != 0);
       break;
     case 'f':
       // kf - feedforward advance steps
-      if(sscanf(buf + *i, " %lu%n", &foo, &read) == 1)
-      {
-        *i += read;
-        ctrl_feedforward_advance = foo;
-        parseok = true;
-      }
+      parseok = read_uint(buf, i, &ctrl_feedforward_advance);
       break;
     case 't':
       // kt - fault threshold
-      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
+      parseok = read_float(buf, i, &ffoo);
+      fault_thresh = fabsf(ffoo);
+      break;
+    case 'u':
+      // ku - controller update period (ms)
+      parseok = read_float(buf, i, &ffoo);
+      ctrl_set_period((uint32_t)(ffoo * 1000.f));
+      break;
+    case 'd':
+      // DARMA control parameters
+      real *target = NULL;
+      switch(buf[(*i)++])
       {
-        *i += read;
-        fault_thresh = fabsf(ffoo);
-        parseok = true;
+      case 'r':
+        // kdr - R vector
+        parseok = read_vector(buf, i, darma_R, FILTER_MAX_SIZE);
+        break;
+      case 's':
+        // kpi - integral constant
+        parseok = read_vector(buf, i, darma_S, FILTER_MAX_SIZE);
+        break;
+      case 't':
+        // kpd - derivative constant
+        parseok = read_vector(buf, i, darma_T, FILTER_MAX_SIZE);
+        break;
       }
       break;
-    }
-    break;
-  case 'p':
-    // controller update period (ms)
-    if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-    {
-      *i += read;
-      ctrl_set_period((uint32_t)(ffoo * 1000.f));
-      parseok = true;
+
+    case 'c':
+      // Compensating control parameters
+      switch(buf[(*i)++])
+      {
+      case 'n':
+        // kcn - C numerator vector
+        parseok = read_vector(buf, i, comp_C_num, FILTER_MAX_SIZE);
+        break;
+      case 'd':
+        // kcd - C denominator vector
+        parseok = read_vector(buf, i, comp_C_den, FILTER_MAX_SIZE - 1);
+        break;
+      case 'o':
+        // kco - F numerator vector
+        parseok = read_vector(buf, i, comp_F_num, FILTER_MAX_SIZE);
+        break;
+      case 'f':
+        // kcf - F denominator vector
+        parseok = read_vector(buf, i, comp_F_den, FILTER_MAX_SIZE - 1);
+        break;
+      }
+      break;
+
     }
     break;
   case 'q':
     // encoder tics per step
-    if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-    {
-      *i += read;
-      set_enc_tics_per_step(ffoo);
-      parseok = true;
-    }
+    parseok = read_float(buf, i, &ffoo);
+    set_enc_tics_per_step(ffoo);
     break;
-  case 's':
+  case 'p':
     // Path sine mode parameters
     switch(buf[(*i)++])
     {
     case 'c':
-      // sc - sine count
-      if(sscanf(buf + *i, " %li%n", &foo, &read) == 1)
-      {
-        *i += read;
-        sine_count = foo;
-        parseok = true;
-      }
+      // pc - sine count
+      parseok = read_uint(buf, i, &sine_count);
       break;
     case 'f':
-      // sf - sine freq
-      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-      {
-        *i += read;
-        path_sines_setfreq(ffoo);
-        parseok = true;
-      }
+      // pf - sine freq
+      parseok = read_float(buf, i, &ffoo);
+      path_sines_setfreq(ffoo);
       break;
     case 'a':
-      // sa - sine amplitude
-      if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
-      {
-        *i += read;
-        sine_amp = ffoo;
-        parseok = true;
-      }
+      // pa - sine amplitude
+      parseok = read_float(buf, i, &sine_amp);
+      break;
+    case 'r':
+      // pr - random scale
+      parseok = read_float(buf, i, &rand_scale);
       break;
     }
     break;
@@ -929,6 +1115,22 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     sprintf(message, "'Failed to parse new value.\n");
     usb_serial_write(message, strlen(message));
   }
+}
+
+// Random number generator:
+uint32_t rand_uint32 (void)
+{
+   static uint32_t z1 = 12345, z2 = 12345, z3 = 12345, z4 = 12345;
+   uint32_t b;
+   b  = ((z1 << 6) ^ z1) >> 13;
+   z1 = ((z1 & 4294967294U) << 18) ^ b;
+   b  = ((z2 << 2) ^ z2) >> 27; 
+   z2 = ((z2 & 4294967288U) << 2) ^ b;
+   b  = ((z3 << 13) ^ z3) >> 21;
+   z3 = ((z3 & 4294967280U) << 7) ^ b;
+   b  = ((z4 << 3) ^ z4) >> 12;
+   z4 = ((z4 & 4294967168U) << 13) ^ b;
+   return (z1 ^ z2 ^ z3 ^ z4);
 }
 
 

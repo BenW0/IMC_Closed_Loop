@@ -42,8 +42,10 @@ const float sine_shifts[SINE_COUNT] = {0.5, 1.0, -0.2, 0.7, -1.3};            //
 
 // Global Variables ====================================================================
 //extern uint32_t systick_millis_count;
+extern float max_ctrl_vel;
 float sine_freq_base = 1;   // rad/sec
 float sine_amp = 20;
+float rand_scale = 1.f;
 uint32_t sine_count = 5;
 
 // Local Variables =====================================================================
@@ -107,6 +109,12 @@ void path_sines_start(void)
   start_time = get_systick_tenus();
 }
 
+void path_rand_start(void)
+{
+  pathmode = PATH_RAND;
+  start_time = get_systick_tenus();
+}
+
 // sets the frequency of the sine series. new_base_freq is the base frequency in Hz
 void path_sines_setfreq(float new_base_freq)
 {
@@ -121,6 +129,8 @@ void path_sines_setfreq(float new_base_freq)
 // at the beginning of the control update.
 void path_get_target(volatile real *target_pos, volatile real *target_vel, uint32_t curtime)
 {
+  static uint32_t last_time = 0;
+  static real last_target_pos = 0;
   uint32_t i, elapsed_time;
   int32_t foo;
 
@@ -194,10 +204,23 @@ void path_get_target(volatile real *target_pos, volatile real *target_vel, uint3
     // convert from target_vel being in steps/tenus to steps/min
     *target_vel *= 6000000.f;
     break;
+  case PATH_RAND :
+    {
+      // move by at most max_ctrl_vel tics/minute.
+      *target_vel = 0;      // I don't want to think about how to set this right now...
+      if(elapsed_time - last_time < 50000U)   // if it's been < 50ms
+        *target_pos = last_target_pos + rand_scale * 2.f * ((real)rand_uint32() - (real)UINT_FAST32_MAX * 0.5f) / (real)UINT_FAST32_MAX * (real)max_ctrl_vel / 6.0e6 * (real)(elapsed_time - last_time);
+      else
+        *target_pos = last_target_pos;
+    }
+    break;
   default :
     // path mode is disabled! Return 0 velocity and the current encoder position
     get_enc_value(&foo);
     *target_pos = (real)foo;
     *target_vel = (real)0.f;
   }
+
+  last_time = elapsed_time;
+  last_target_pos = *target_pos;
 }

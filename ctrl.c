@@ -38,7 +38,7 @@ typedef struct
 } hist_data_t;
 
 // Constants =========================================================================
-#define HIST_SIZE   2048U     // have the history use ~40k of memory. Needs to be a power of 2.
+#define HIST_SIZE   1600U     // have the history use ~40k of memory.
 #define FF_TARGETS 16        // Feed forward target buffer size. another ring buffer...needs to be a power of 2.
 
 // Global Variables ==================================================================
@@ -47,13 +47,24 @@ extern float steps_per_enc_tic;
 extern bool old_stepper_mode;
 float pid_kp = 0.f, pid_ki = 0.f, pid_kd = 0.f;
 float min_ctrl_vel = 0;
-float max_ctrl_vel = 1.0e6;      //maximum velocity my test motor can support consistently without stalling.
+float max_ctrl_vel = 21.0e6;      //maximum velocity my test motor can support consistently without stalling.
 bool pos_ctrl_mode = true;       // controllers output new position target which gets converted to velocity.
 uint32_t ctrl_feedforward_advance = 0;
 float fault_thresh = 10.f;        // change in error between commanded and actual position that triggers a fault condition.
 real osac_As[10] = {0., 0.};      // A is assumed monic, so all we store is A1..A10
 real osac_Bs[10] = {1.};          // B is not monic, so we store B0..B9
 uint32_t osac_Acount = 2, osac_Bcount = 1;
+
+real darma_R[FILTER_MAX_SIZE] = {1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+real darma_S[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+real darma_T[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+
+real comp_C_gain = 0.;
+real comp_C_num[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+real comp_C_den[FILTER_MAX_SIZE - 1] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+real comp_F_gain = 1.;
+real comp_F_num[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+real comp_F_den[FILTER_MAX_SIZE - 1] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 
 
 // Local Variables ===================================================================
@@ -64,10 +75,11 @@ static volatile uint32_t update_time = 0;		// set to the time the last update to
 static volatile hist_data_t hist_data[HIST_SIZE];
 static volatile uint32_t hist_head = 0;
 static uint32_t hist_time_offset = 0;
-static char message[100] = "Hello, World";
+//static char message[100] = "Hello, World";
 static volatile float last_vel = 0;   // velocity chosen last update
 static volatile int32_t last_encpos = 0.f;
-static volatile real ctrl_integrator = 0.f;   // control integrator variable.
+static volatile real last_ctrl_out = 0.f;
+//static volatile real ctrl_integrator = 0.f;   // control integrator variable.
 static volatile real ff_target_pos_buf[FF_TARGETS];
 static volatile real ff_target_vel_buf[FF_TARGETS];
 static volatile uint32_t ff_target_head = 0;
@@ -75,10 +87,23 @@ static volatile uint32_t ff_target_head = 0;
 // PID variables
 static volatile float pid_i_sum = 0.f;
 
+// Shared Filter variables (used by DARMA and comp)
+static real filter_y_hist[FILTER_MAX_SIZE];   // output
+static real filter_u_hist[FILTER_MAX_SIZE];   // input
+static real filter_uc_hist[FILTER_MAX_SIZE];  // target (control input)
+static uint32_t filter_head = 0;
+static uint32_t filter_warmup = 0;             // counts the number of times darma has updated to make sure the buffers are full.
+
+// Compensating filter variables
+static real comp_c_hats[FILTER_MAX_SIZE];     // c_hats list (the past outputs from the C block -- see notes 6/11/14)
+static real comp_f_hats[FILTER_MAX_SIZE];     // f_hats list (the past outputs from the F block)
+
 // Function Predeclares ==============================================================
 void set_update_cycles(uint32_t cycles);
 real pid_ctrl(real dt, real target_pos, real target_vel, real encpos, real lastvel);
 void bang_ctrl(real dt, real target_pos, real target_vel, real encpos);
+real darma_ctrl();
+real comp_ctrl();
 bool fault_check(real encpos, real cmdpos, real *pos_error_deriv);
 
 // Initializes the PIT timer used for control
@@ -90,7 +115,7 @@ void init_ctrl(void)
   PIT_TCTRL3 = PIT_TCTRL_TIE_MASK;
 	
   NVIC_ENABLE_IRQ(IRQ_PIT_CH3);
-	ctrl_set_period(5000);		// start with 5ms update frequency
+	ctrl_set_period(1000);		// start with 1ms update frequency
   ctrl_enable(CTRL_DISABLED); // disable the timer which ctrl_set_period just enabled
 	
 	// Controller heartbeat (for checking clock regularity)
@@ -101,6 +126,10 @@ void init_ctrl(void)
   vmemset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
   vmemset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
   vmemset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
+
+  vmemset((void *)filter_u_hist, 0, sizeof(real) * FILTER_MAX_SIZE);
+  vmemset((void *)filter_y_hist, 0, sizeof(real) * FILTER_MAX_SIZE);
+  vmemset((void *)filter_uc_hist, 0, sizeof(real) * FILTER_MAX_SIZE);
 }
 
 // Sets the frequency of the controller update
@@ -136,7 +165,7 @@ void ctrl_enable(ctrl_mode newmode)
     pid_i_sum = 0;
     get_enc_value(&last_encpos);
     last_vel = 0;
-    ctrl_integrator = 0;
+    //ctrl_integrator = 0;
     ff_target_head = 0;
     vmemset((void *)ff_target_pos_buf, 0, sizeof(real) * FF_TARGETS);
     vmemset((void *)ff_target_vel_buf, 0, sizeof(real) * FF_TARGETS);
@@ -147,6 +176,32 @@ void ctrl_enable(ctrl_mode newmode)
       vmemset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
       hist_head = 0;
       hist_time_offset = get_systick_tenus();   // so we don't have some 0's and then stuff way off in time at the same time
+    }
+
+    // reset filter history variables (used by darma and comp controllers)
+    vmemset((void *)filter_u_hist, 0, sizeof(real) * FILTER_MAX_SIZE);
+    vmemset((void *)filter_y_hist, 0, sizeof(real) * FILTER_MAX_SIZE);
+    vmemset((void *)filter_uc_hist, 0, sizeof(real) * FILTER_MAX_SIZE);
+    filter_head = 0;
+    filter_warmup = 0;
+
+    // darma history variables check
+    if(CTRL_DARMA == newmode)
+    {
+      if(fabsf(darma_R[0]) < 1.e-6)   // somewhat arbitrary, but in my experience this is way too small to work.
+      {
+        sprintf(message, "'Very small value of R[0] means DARMA is not going to be stable! Please choose a larger R[0]");
+        usb_serial_write(message, strlen(message));
+        ctrl_enable(CTRL_DISABLED);
+        return;
+      }
+    }
+
+    // comp: clear additional filters
+    if(CTRL_COMP == newmode)
+    {
+      vmemset((void *)comp_c_hats, 0, sizeof(real) * FILTER_MAX_SIZE);
+      vmemset((void *)comp_f_hats, 0, sizeof(real) * FILTER_MAX_SIZE);
     }
 
     set_update_cycles(ctrl_period_cycles);
@@ -220,6 +275,12 @@ void pit3_isr(void)
 
   target_pos = ff_target_pos_buf[(ff_target_head - ctrl_feedforward_advance) & (FF_TARGETS - 1)];
   target_vel = ff_target_vel_buf[(ff_target_head - ctrl_feedforward_advance) & (FF_TARGETS - 1)];
+
+  // add target_pos and encpos to their respective filter ring buffers, and clear the current element of u for now.
+  filter_head = (filter_head + 1) & (FILTER_MAX_SIZE - 1);     // power of 2 ring buffer.
+  filter_u_hist[filter_head] = 0.f;
+  filter_y_hist[filter_head] = encpos;
+  filter_uc_hist[filter_head] = target_pos;
 	
 	// perform the control law
   switch(mode)
@@ -240,6 +301,12 @@ void pit3_isr(void)
   case CTRL_BANG :
     bang_ctrl(ctrl_period_sec, target_pos, target_vel, encpos);
     ctrl_out = 0;   // bang-bang doesn't use velocity.
+    break;
+  case CTRL_DARMA :
+    ctrl_out = darma_ctrl();    // darma_ctrl gets all the data it needs from the filter ringbuffers.
+    break;
+  case CTRL_COMP :
+    ctrl_out = comp_ctrl();
     break;
   default :
     // disable this interrupt
@@ -266,15 +333,21 @@ void pit3_isr(void)
       //usb_serial_write(message, strlen(message));
     }
     ctrl_out = -((real)motorpos * enc_tics_per_step - ctrl_out) / ctrl_period_sec * 60;    // see notebook, 5/7/14
+    //ctrl_out = -(encpos - ctrl_out) / ctrl_period_sec * 60;
   }
 
   // clamp the new velocity
   if(fabsf(ctrl_out) < min_ctrl_vel) ctrl_out = 0;
   if(fabsf(ctrl_out) > max_ctrl_vel) ctrl_out = copysignf(max_ctrl_vel, ctrl_out);
+
+  // re-compute the control output after clamping for use by DARMA next time
+  last_ctrl_out = ctrl_out * ctrl_period_sec / 60.f + (real)motorpos * enc_tics_per_step;
+  filter_u_hist[filter_head] = last_ctrl_out;   // save for future use on filter buffer
   
 
   // save this update to the ring buffer
-  hist_head = (hist_head + 1) & (HIST_SIZE - 1);   // list_size is a power of 2, so list_size - 1 is 0b0..01..1
+  //hist_head = (hist_head + 1) & (HIST_SIZE - 1);   // list_size is a power of 2, so list_size - 1 is 0b0..01..1
+  if(++hist_head >= HIST_SIZE) hist_head = 0;
   hist_data[hist_head].time = time_of_update - hist_time_offset;  // rollover may occur here, but this is just reporting.
   hist_data[hist_head].motor_position = motorpos * enc_tics_per_step;
   hist_data[hist_head].position = encpos;
@@ -379,21 +452,106 @@ void bang_ctrl(real dt, real target_pos, real target_vel, real encpos)
   }
 }
 
-// One step ahead controller
-// computes the control law based on the encoder value we want to have one step from now. Note that this only
-// works well because we have an input/output delay of 1.
-// target_pos_next is the target position at t+1
-// right now, it can only handle systems with a single, z^0 term in the numerator and a 2nd order system.
-real osac_ctrl(real target_pos_next, real encpos)
+// Darma controller
+// computes the control law based on a DARMA-like controller (control law is based on current and
+// past system inputs and outputs. That is, u(k) is computed from:
+//  R*u(k) = T*uc(k) - S*y(k)
+// where R, T, and S are polynomials in q^-1 (the backwards shift operator), specified in darma_[R/T/S].
+// u(k) is the output of the controller/input of the system at the current time; uc(k) is the control input
+// (reference input/target position) and y(k) is the current system output.
+// This is designed to be used with either model-based control or model following control.
+real darma_ctrl()
 {
-  static real y_hist[16] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
-  static real u_hist[16] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
-  // F0 = Identity because delay d = 1.
-  // G_i = A_(i+1)
-  
+  real Ru = 0, Sy = 0, Tuc = 0, u_out;
+
+
+  if(filter_warmup > FILTER_MAX_SIZE)   // don't run the controller until all buffers are full
+  {
+
+    // compile the terms. NOTE: Officially, the Ru term should only contain terms 1..end of R and u
+    // (we will divide by R(0) in a minute to *obtain* u(k), the value to feed to the system). Instead
+    // of dedicated logic, we set the first u in the hist buf (above) to 0.
+    for(uint32_t i = 0, j = filter_head; i < FILTER_MAX_SIZE; ++i, j = (j - 1) & (FILTER_MAX_SIZE - 1))
+    {
+      // i indexes the coeficient masks, j indexes the history masks (and automatically loops
+      Ru += darma_R[i] * filter_u_hist[j];
+      Sy += darma_S[i] * filter_y_hist[j];
+      Tuc += darma_T[i] * filter_uc_hist[j];
+    }
+
+    // compute the control law!
+    u_out = 1/darma_R[0] * (Tuc - Sy - Ru);
+  }
+  else
+  {
+    u_out = filter_uc_hist[filter_head];   // unity mode control during warmup
+    filter_warmup++;
+  }
+
+  return u_out;
 }
 
 
+// Compensating filter controller
+// This is based on my notes 6/11/14-6/12/14. The controller is designed after a compensating network used by
+// Matlab's sisotool. The structure looks like this:
+//
+//                     .-------.   f_hat
+//         .---------->|   F   |--------.
+//         |           *-------*        |
+//    uc   |           .-------. c_hat  |   u     .--------.
+//   ------+--->|+|--->|   C   |------>|+|------->| System |--+----> y (encoder read value)
+//              -^     *-------*                  *--------*  |
+//               |____________________________________________|
+//
+// C and F are both "compensating filters", user-selected causal linear IIR filters expressed in the form
+//        b_0 + b_1 * z^-1 + ... + b_n * z^-n
+//   C = -------------------------------------
+//        1 + a_1 * z^-1 + ... + a^m * z^-m
+//
+// where the vectors b and a come from comp_C_num and comp_C_den, respectively, NOTE that comp_C_num[0] = b_0 
+// while comp_C_den[0] = a_1!!
+// 
+// To compute the filters, I am using:
+//      f_hat = F*uc  ---> f_hat * F_den = F_num * uc
+// The first element of f_hat * F_den is f_hat * z^0 = f_hat[t]. This is what we are solving for.
+// So, I compile the numerator term and the denominator term (except for the first element) and write:
+//      f_hat[t] = F_num * uc + (f_hat * F_den)*
+// where (f_hat * F_den)* is terms 2..m of the series.
+//
+// All the parameters needed for this function are already supplied in the filter tables.
+//
+real comp_ctrl(void)
+{
+  real ucFn, fhFd = 0., errCn, chCd = 0.;
+  
+  if(filter_warmup > FILTER_MAX_SIZE)   // don't run the controller until all buffers are full
+  {
+
+    // compile the filters. First element of both numerators is filled in by hand; first element of both denominators is what we're solving for.
+    ucFn = comp_F_num[0] * filter_uc_hist[filter_head];
+    errCn = comp_C_num[0] * (filter_uc_hist[filter_head] - filter_y_hist[filter_head]);    // error is uc - y.
+
+    for(uint8_t i = 0, j = (filter_head - 1) & FILTER_MAX_SIZE; i < FILTER_MAX_SIZE - 1; i++, j = (j - 1) & FILTER_MAX_SIZE)
+    {
+      // i counts indexes in the filter polys; j counts indexes in the filter buffers.
+      ucFn += comp_F_num[i + 1] * filter_uc_hist[j];
+      fhFd += comp_F_den[i] * comp_f_hats[j];
+      errCn += comp_C_num[i + 1] * (filter_uc_hist[j] - filter_y_hist[j]);
+      chCd += comp_C_den[i] * comp_c_hats[j];
+    }
+
+    // compute the outputs
+    comp_f_hats[filter_head] = ucFn - fhFd;
+    comp_c_hats[filter_head] = errCn - chCd;
+    return comp_f_hats[filter_head] + comp_c_hats[filter_head];
+  }
+  else
+  {
+    filter_warmup++;
+    return filter_uc_hist[filter_head];   // unity control mode
+  }
+}
 
 // Fault check
 // Looks for significant changes in the error between the motor command position (coming out of the controller)

@@ -7,8 +7,13 @@ typedef enum
   CTRL_DISABLED,    // module disabled.
   CTRL_UNITY,       // Controller is G(z) = 1
   CTRL_PID,          // PID control mode
-  CTRL_BANG         // bang-bang control mode
+  CTRL_BANG,         // bang-bang control mode
+  CTRL_DARMA,        // DARMA control mode
+  CTRL_COMP           // compensating filter controller
 } ctrl_mode;
+
+
+#define FILTER_MAX_SIZE 8      // maximum number of terms in any controller that uses a filter (darma/comp). Ring buffer...needs to be a power of 2.
 
 void init_ctrl(void);
 
