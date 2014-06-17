@@ -88,7 +88,11 @@ void read_enc(void)
       {
         if(!lost_track)
         {
-          sprintf(message, "'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), readval, last_readval, time - last_update_tenus);
+          sprintf(message, "'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", 
+            (unsigned int)labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), 
+            (unsigned int)readval, 
+            (unsigned int)last_readval, 
+            (unsigned int)(time - last_update_tenus));
           usb_serial_write(message, strlen(message));
         }
         lost_track = true;

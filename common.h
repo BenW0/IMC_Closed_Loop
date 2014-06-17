@@ -66,9 +66,19 @@ __attribute__ ((always_inline)) inline void delay_real(uint32_t ms)
     ;
 } 
 
+// a few time-related constants
+#define TENUS_PER_MIN_F       ((float)6.e6)
+#define TENUS_PER_MIN_I       6000000L
+#define TENUS_PER_SEC_F       ((float)1.e5)
+#define TENUS_PER_SEC_I       100000L
+#define MIN_PER_TENUS_F       ((float)1.6666666666667e-7)
+
 
 // Random number generator: (lfsr113)
 uint32_t rand_uint32 (void);
+
+// printf to serial port:
+void serial_printf(const char *format, ...);
 
 // everyone uses the "message" variable for compiling strings to be sent to host over serial
 extern char message[200];

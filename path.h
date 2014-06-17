@@ -21,7 +21,8 @@ typedef enum {
 } __attribute__ ((packed)) pathmode_t;
 
 void path_set_step_target(int32_t target);
-void path_set_move(const msg_queue_move_t *move);
+
+void path_ramps_move(const msg_queue_move_t *move, int32_t startpos);
 
 void path_custom_clear(void);
 void path_custom_add_elem(const custom_path_dp_t *elem);

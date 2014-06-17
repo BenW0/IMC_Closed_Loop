@@ -66,6 +66,9 @@
  *          pcc - clears the custom path buffer.
  *       pq - sine mode. Generates position and velocity targets from five summed sine waves.
  *       pr - random path mode. Generates a random path, keeping successive datapoints less than max vel (param a)
+ *       pm - ramps-move mode. Move according to a trajectory generated using RAMPS's planner. Trajectory is
+ *          specified using the pm parameter vector and executes only once. This path mode is used when the system mode is IMC
+ *          network mode.
  * 
  *  Parameter commands:
  *   gX - gets parameter X's value
@@ -104,6 +107,9 @@
  *      pf - sine frequency base - rad/tenus
  *      pa - sine amplitude (tics)
  *      pr - random path move amplitude (0->1 scalar, normalized against ctrl max vel)
+ *      pm - path parameters used when executing a ramps-style move. This is a vector, with elements 
+ *             {length, total_length, initial_rate, nominal_rate, final_rate, acceleration}. All elements are int32_t type.
+ *             For this vector, all distances are in motor steps and all times are in minutes.
  *    q - encoder tics per step (float)
  *    u - last controller update time (in ms), read only
  *
@@ -126,6 +132,7 @@
 #include "imc/main_imc.h"
 #include "imc/stepper.h"
 #include "imc/parameters.h"
+#include "imc/utils.h"
 
 typedef enum {
   SS_IDLE,
@@ -156,6 +163,7 @@ extern real comp_F_den[FILTER_MAX_SIZE - 1];
 
 char message[200];
 sys_state_e sysstate = SS_IDLE;
+
 float enc_tics_per_step = 21.7343;//1.4986;                       // encoder tics per motor (micro)step (roughly)
 float steps_per_enc_tic = 1/21.7343;//1/1.4986;                          // = 1 / enc_tics_per_step
 
@@ -168,6 +176,7 @@ volatile uint32_t csr_last;
 static char msg_build[30];
 static uint32_t show_encoder_time = 0;
 static bool moving = false;
+static int32_t ramps_move_params[6] = {0, 0, 0, 0, 0, 0};
 
 // Function Predeclares ======================================================
 void parse_usb();
@@ -629,6 +638,21 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
   case 'r':   // pr - random mode
     path_rand_start();
     break;
+  case 'm':   // pm - ramps-style move
+    {
+      // Set up the move
+      msg_queue_move_t msg;
+      msg.length = ramps_move_params[0];
+      msg.total_length = ramps_move_params[1];
+      msg.initial_rate = ramps_move_params[2];
+      msg.nominal_rate = ramps_move_params[3];
+      msg.final_rate = ramps_move_params[4];
+      msg.acceleration = ramps_move_params[5];
+      get_enc_value(&foo);
+      path_ramps_move(&msg, foo);
+    }
+    break;
+
   default :
     sprintf(message, "'Unrecognized command.\n");
     usb_serial_write(message, strlen(message));
@@ -742,7 +766,6 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
         // DARMA control parameters
         real *target = NULL;
         int32_t m = 0;
-        char foo[150];
         switch(buf[(*i)++])
         {
         case 'r':
@@ -858,6 +881,16 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
       // pr - random move scale
       serial_printf("%f\n", rand_scale);
       break;
+    case 'm':
+      // pm - ramps-style move parameters
+      message[0] = 0;
+      for(uint32_t k = 0; k < 6; k++)
+      {
+        sprintf(msg_build, "%li ", ramps_move_params[k]);
+        strcat(message, msg_build);
+      }
+      strcat(message, "\n");
+      usb_serial_write(message, strlen(message));
     }
     break;
   case 'd':
@@ -874,7 +907,7 @@ bool read_float(const char * buf, uint32_t *i, float *value)
 {
   uint32_t read;
   float ffoo;
-  if(sscanf(buf + *i, " %f%n", &ffoo, &read) == 1)
+  if(sscanf(buf + *i, " %f%n", &ffoo, (int*)&read) == 1)
   {
     *i += read;
     *value = ffoo;
@@ -887,7 +920,7 @@ bool read_int(const char * buf, uint32_t *i, int32_t *value)
 {
   uint32_t read;
   int32_t foo;
-  if(sscanf(buf + *i, " %li%n", &foo, &read) == 1)
+  if(sscanf(buf + *i, " %li%n", &foo, (int*)&read) == 1)
   {
     *i += read;
     *value = foo;
@@ -900,7 +933,7 @@ bool read_uint(const char * buf, uint32_t *i, uint32_t *value)
 {
   uint32_t read;
   uint32_t foo;
-  if(sscanf(buf + *i, " %lu%n", &foo, &read) == 1)
+  if(sscanf(buf + *i, " %lu%n", &foo, (int*)&read) == 1)
   {
     *i += read;
     *value = foo;
@@ -909,7 +942,7 @@ bool read_uint(const char * buf, uint32_t *i, uint32_t *value)
   return false;
 }
 
-bool read_vector(const char *buf, uint32_t *i, float *vector, uint32_t size)
+bool read_vector_float(const char *buf, uint32_t *i, float *vector, uint32_t size)
 {
   uint32_t read;
   if(vector)
@@ -919,7 +952,7 @@ bool read_vector(const char *buf, uint32_t *i, float *vector, uint32_t size)
     // load the buffer
     for(uint32_t k = 0; k < size; k++)
     {
-      if(sscanf(buf + *i, " %f%n", &vector[k], &read) == 1)
+      if(sscanf(buf + *i, " %f%n", &vector[k], (int*)&read) == 1)
         *i += read;
       else
         break;    // we're done!
@@ -929,12 +962,32 @@ bool read_vector(const char *buf, uint32_t *i, float *vector, uint32_t size)
   return false;
 }
 
+bool read_vector_int(const char *buf, uint32_t *i, int32_t *vector, uint32_t size)
+{
+  uint32_t read;
+  if(vector)
+  {
+    // clear the buffer
+    vmemset((void *)vector, 0, sizeof(int32_t) * size);
+    // load the buffer
+    for(uint32_t k = 0; k < size; k++)
+    {
+      if(sscanf(buf + *i, " %li%n", &vector[k], (int*)&read) == 1)
+        *i += read;
+      else
+        break;    // we're done!
+    }
+    return true;
+  }
+  return false;
+}
+
+
 // Parses a Set Parameter message
 void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
 {
   int32_t foo;
   float ffoo;
-  int read;
   bool parseok = false;
   // which parameter?
   switch(buf[(*i)++])
@@ -1014,7 +1067,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       break;
     case 'm':
       // km - control to position mode
-      parseok = read_uint(buf, i, &foo);
+      parseok = read_uint(buf, i, (uint32_t*)&foo);
       pos_ctrl_mode = (foo != 0);
       break;
     case 'f':
@@ -1033,20 +1086,19 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       break;
     case 'd':
       // DARMA control parameters
-      real *target = NULL;
       switch(buf[(*i)++])
       {
       case 'r':
         // kdr - R vector
-        parseok = read_vector(buf, i, darma_R, FILTER_MAX_SIZE);
+        parseok = read_vector_float(buf, i, darma_R, FILTER_MAX_SIZE);
         break;
       case 's':
         // kpi - integral constant
-        parseok = read_vector(buf, i, darma_S, FILTER_MAX_SIZE);
+        parseok = read_vector_float(buf, i, darma_S, FILTER_MAX_SIZE);
         break;
       case 't':
         // kpd - derivative constant
-        parseok = read_vector(buf, i, darma_T, FILTER_MAX_SIZE);
+        parseok = read_vector_float(buf, i, darma_T, FILTER_MAX_SIZE);
         break;
       }
       break;
@@ -1057,19 +1109,19 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       {
       case 'n':
         // kcn - C numerator vector
-        parseok = read_vector(buf, i, comp_C_num, FILTER_MAX_SIZE);
+        parseok = read_vector_float(buf, i, comp_C_num, FILTER_MAX_SIZE);
         break;
       case 'd':
         // kcd - C denominator vector
-        parseok = read_vector(buf, i, comp_C_den, FILTER_MAX_SIZE - 1);
+        parseok = read_vector_float(buf, i, comp_C_den, FILTER_MAX_SIZE - 1);
         break;
       case 'o':
         // kco - F numerator vector
-        parseok = read_vector(buf, i, comp_F_num, FILTER_MAX_SIZE);
+        parseok = read_vector_float(buf, i, comp_F_num, FILTER_MAX_SIZE);
         break;
       case 'f':
         // kcf - F denominator vector
-        parseok = read_vector(buf, i, comp_F_den, FILTER_MAX_SIZE - 1);
+        parseok = read_vector_float(buf, i, comp_F_den, FILTER_MAX_SIZE - 1);
         break;
       }
       break;
@@ -1102,6 +1154,10 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
       // pr - random scale
       parseok = read_float(buf, i, &rand_scale);
       break;
+    case 'm':
+      // pm - ramps-style move parameters
+      parseok = read_vector_int(buf, i, ramps_move_params, 6);
+      break;
     }
     break;
   default :
@@ -1112,8 +1168,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
   }
   if(!parseok)
   {
-    sprintf(message, "'Failed to parse new value.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'Failed to parse new value.\n");
   }
 }
 
