@@ -18,6 +18,7 @@ typedef enum
 void init_ctrl(void);
 
 void ctrl_enable(ctrl_mode mode);
+ctrl_mode ctrl_get_mode(void);
 
 void ctrl_set_period(uint32_t us);
 uint32_t ctrl_get_period(void);

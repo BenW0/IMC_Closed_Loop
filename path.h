@@ -14,7 +14,8 @@ typedef struct {
 // path mode enum
 typedef enum {
   PATH_STEP,
-  PATH_RAMPS,
+  PATH_RAMPS_MOVING,    // mode for when we are under trapezoidal motion
+  PATH_RAMPS_WAITING,   // mode for when we are waiting for a move to queue so we can start moving
   PATH_CUSTOM,
   PATH_SINES,
   PATH_RAND
@@ -22,6 +23,7 @@ typedef enum {
 
 void path_set_step_target(int32_t target);
 
+void path_imc(real wait_pos);
 void path_ramps_move(const msg_queue_move_t *move, int32_t startpos);
 
 void path_custom_clear(void);

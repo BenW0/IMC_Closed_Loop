@@ -217,6 +217,11 @@ void ctrl_enable(ctrl_mode newmode)
   mode = newmode;
 }
 
+ctrl_mode ctrl_get_mode(void)
+{
+  return mode;
+}
+
 
 // gets the most recent control law update time (time to perform the calculations for the controller)
 // returns ms.
@@ -371,7 +376,7 @@ void pit3_isr(void)
   // get the path target location (encoder tics) and velocity (encoder tics/minute) for the NEXT update (even including feedforward).
   // We will get the target advanced in time ctrl_feedforward_advance steps + 1 and keep it until it's current.
   ff_target_head = (ff_target_head + 1) & (FF_TARGETS - 1);   // advance the head
-  path_get_target(ff_target_pos_buf + ff_target_head, ff_target_vel_buf + ff_target_head, time_of_update + (ctrl_feedforward_advance + 1) * ctrl_period_sec * 100000.f);
+  path_get_target(ff_target_pos_buf + ff_target_head, ff_target_vel_buf + ff_target_head, time_of_update + (ctrl_feedforward_advance + 1) * ctrl_period_sec * TENUS_PER_SEC_F);
 
 	
   

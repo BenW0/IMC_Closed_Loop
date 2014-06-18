@@ -157,8 +157,8 @@ uint8_t read_spi(uint32_t *value)
 	uint8_t parcheck = 0;
 	for(i = 14; i < 31; i++)
 		if(inp & (1 << i)) parcheck ^= 1;
-	// valid packet if ocf = 1, cof = 0, lin = 0, mag_inc = 0, mag_dec = 0, parcheck == par.
-	if(!ocf || cof || lin || mag_inc || mag_dec || parcheck != par)
+	// valid packet if ocf = 1, cof = 0, lin = 0, mag_inc and mag_dec not both 1, parcheck == par.
+	if(!ocf || cof || lin || (mag_inc && mag_dec) || parcheck != par)
   {
     sprintf(message, "'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
     usb_serial_write(message,strlen(message));

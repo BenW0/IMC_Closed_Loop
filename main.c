@@ -17,6 +17,7 @@
  *    aren't interpreted as faults.
  *  - finish implementing osac control.
  *  - fix/re-enable the endstop cuttoffs in control_isr.c
+ *  - Figure out how to handle imc-triggered homing.
  *
  * Pinnout: This code is developed against a Teensy 3.1 MK20DX256 chip.
  *  PB18, PB19 <--> 32, 25 - quadrature inputs
@@ -135,12 +136,11 @@
 #include "imc/utils.h"
 
 typedef enum {
-  SS_IDLE,
-  SS_FIXED_SPEED,
-  SS_MOVE_STEPS,
-  SS_CTRL,       // any of the controllers
-  SS_IMC          // IMC mode - listening to i2c bus for instructions
-} sys_state_e;
+  RL_IDLE,
+  RL_MANUAL,      // manually moves the motor.
+  RL_CTRL,        // control enabled, but target trajectory is specified over serial
+  RL_IMC          // IMC mode - listening to i2c bus for instructions. Implies controller is active and path is in ramps mode
+} runlevel_e;
 
 // Global Variables ==========================================================
 //extern volatile uint32_t systick_millis_count;    // system millisecond timer
@@ -162,7 +162,8 @@ extern real comp_F_num[FILTER_MAX_SIZE];
 extern real comp_F_den[FILTER_MAX_SIZE - 1];
 
 char message[200];
-sys_state_e sysstate = SS_IDLE;
+runlevel_e runlevel = RL_IDLE;
+enum { M_FIXED_SPEED, M_MOVE_STEPS } manual_mode;
 
 float enc_tics_per_step = 21.7343;//1.4986;                       // encoder tics per motor (micro)step (roughly)
 float steps_per_enc_tic = 1/21.7343;//1/1.4986;                          // = 1 / enc_tics_per_step
@@ -217,7 +218,7 @@ int main()
     msg.param_value = IMC_PULLUP;
     handle_set_parameter(&msg);
     msg.param_id = IMC_PARAM_MAX_LIMIT_INV;
-    msg.param_value = 0;
+    msg.param_value = 1;
     handle_set_parameter(&msg);
     msg.param_id = IMC_PARAM_MIN_LIMIT_INV;
     msg.param_value = 0;
@@ -236,7 +237,7 @@ int main()
 
   while(1)
   {
-    if(SS_IMC == sysstate)
+    if(RL_IMC == runlevel)
       imc_idle();   // IMC main loop
 
     if(usb_serial_available() > 0)
@@ -255,7 +256,7 @@ int main()
       usb_serial_write(message,strlen(message));
     }
     
-    if(SS_MOVE_STEPS == sysstate && get_steps_to_go() == -1 && moving)
+    if(RL_MANUAL == runlevel && M_MOVE_STEPS == manual_mode && get_steps_to_go() == -1 && moving)
     {
       // done with move!
       get_enc_value(&value);
@@ -264,7 +265,7 @@ int main()
       moving = false;
     }
 #ifndef USE_QD_ENC
-    //enc_idle();
+    enc_idle();
 #endif
   }
 }
@@ -288,7 +289,7 @@ void parse_usb(void)
     {
     case 'i':
       // idle state
-      sysstate = SS_IDLE;
+      runlevel = RL_IDLE;
       ctrl_enable(CTRL_DISABLED);
       old_stepper_mode = false;
       stop_motion();
@@ -301,7 +302,8 @@ void parse_usb(void)
 
       break;
     case 'f':
-      sysstate = SS_FIXED_SPEED;
+      runlevel = RL_MANUAL;
+      manual_mode = M_FIXED_SPEED;
       old_stepper_mode = false;
       // try to read a step frequency
       if(sscanf(buf + i, " %li%n", (long *)&foo, &read) == 1)
@@ -312,16 +314,23 @@ void parse_usb(void)
       }
       sprintf(message, "'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
       usb_serial_write(message, strlen(message));
+      ctrl_enable(CTRL_DISABLED);
       enable_stepper();
       set_steps_to_go(-1);
       start_moving();
       moving = true;
       break;
     case 'n':   // IMC network mode
-      sysstate = SS_IMC;
+      runlevel = RL_IMC;
+      serial_printf("'IMC network mode\n");
       
-      sprintf(message, "'IMC network mode\n");
-      usb_serial_write(message, strlen(message));
+      // turn on a controller, if there isn't one already
+      if(ctrl_get_mode() == CTRL_DISABLED && !old_stepper_mode)
+        ctrl_enable(CTRL_UNITY);
+      // set path to ramps mode
+      get_enc_value(&foo2);
+      path_imc((real)foo2);
+
       enable_stepper();
       set_steps_to_go(-1);
       start_moving();
@@ -335,11 +344,13 @@ void parse_usb(void)
       {
         i += read;
         if(0 == foo) foo = 1;
+        ctrl_enable(CTRL_DISABLED);
         set_direction(foo < 0);
         set_step_events_per_minute_ctrl(10000);
         set_steps_to_go((int32_t)labs((long)foo));
         
-        sysstate = SS_MOVE_STEPS;
+        runlevel = RL_MANUAL;
+        manual_mode = M_MOVE_STEPS;
         get_enc_value(&foo2);
         sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n'  Current encoder value = %li\n", get_motor_position(), foo, foo2);
         usb_serial_write(message, strlen(message));
@@ -351,7 +362,8 @@ void parse_usb(void)
       {
         sprintf(message, "'Couldn't parse a distance to move!\n");
         usb_serial_write(message, strlen(message));
-        sysstate = SS_IDLE;
+        runlevel = RL_IDLE;
+        ctrl_enable(CTRL_DISABLED);
         moving = false;
       }
       break;
@@ -373,39 +385,43 @@ void parse_usb(void)
       break;
     default :
       // try to read a new step frequency or target location given previous state
-      switch(sysstate)
+      switch(runlevel)
       {
-      case SS_FIXED_SPEED:
-        // try to read a step frequency
-        if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
+      case RL_MANUAL:
+        if(M_FIXED_SPEED == manual_mode)
         {
-          i += read;
-          set_direction(foo < 0);
-          set_step_events_per_minute_ctrl((uint32_t)abs(foo));
-          sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
-          usb_serial_write(message, strlen(message));
+          // try to read a step frequency
+          if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
+          {
+            i += read;
+            set_direction(foo < 0);
+            set_step_events_per_minute_ctrl((uint32_t)abs(foo));
+            sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
+            usb_serial_write(message, strlen(message));
+          }
+          else
+          {
+            sprintf(message, "'Didn't understand new f value\n");
+            usb_serial_write(message, strlen(message));
+          }
         }
         else
         {
-          sprintf(message, "'Didn't understand new f value\n");
-          usb_serial_write(message, strlen(message));
+          // try to read a new move target
+          if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
+          {
+            i += read;
+            set_direction((foo) < 0);
+            set_steps_to_go((uint32_t)abs(foo));
+            get_enc_value(&foo2);
+            sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
+            usb_serial_write(message, strlen(message));
+            start_moving();
+            moving = true;
+          }
         }
         break;
-      case SS_MOVE_STEPS:
-        // try to read a new move target
-        if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
-        {
-          i += read;
-          set_direction((foo) < 0);
-          set_steps_to_go((uint32_t)abs(foo));
-          get_enc_value(&foo2);
-          sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
-          usb_serial_write(message, strlen(message));
-          start_moving();
-          moving = true;
-        }
-        break;
-      case SS_CTRL:
+      case RL_CTRL:
         // try to read a new move target
         if(sscanf(buf + i - 1, "%li%n", (long *)&foo, &read) == 1)
         {
@@ -418,8 +434,8 @@ void parse_usb(void)
           usb_serial_write(message, strlen(message));
         }
         break;
-      case SS_IDLE :
-      case SS_IMC :
+      case RL_IDLE :
+      case RL_IMC :
         // nothing to do.
         break;
       }
@@ -454,7 +470,8 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
       sprintf(message, "'PID control mode.\n");
       usb_serial_write(message, strlen(message));
     }
-    sysstate = SS_CTRL;
+    if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
+      runlevel = RL_CTRL;
     ctrl_enable(CTRL_PID);
 
     enable_stepper();
@@ -477,10 +494,12 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
 	    else	// counter rolled over
 		    update_time = old_systic - new_systic + SYST_RVR;
 
-
+      
+      foo = get_motor_position() * enc_tics_per_step;
       path_set_step_target(foo);
-
-      sysstate = SS_CTRL;
+      
+      if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
+        runlevel = RL_CTRL;
       ctrl_enable(CTRL_UNITY);
 
       enable_stepper();
@@ -495,7 +514,9 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     // Bang control mode
     get_enc_value(&foo);
     path_set_step_target(foo);
-    sysstate = SS_CTRL;
+    
+    if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
+      runlevel = RL_CTRL;
     ctrl_enable(CTRL_BANG);
 
     enable_stepper();
@@ -508,7 +529,7 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
   case 'l':
     // Legacy control mode
     // only available if system mode is IMC network mode.
-    if(SS_IMC == sysstate)
+    if(RL_IMC == runlevel)
     {
       // We implement this by disabling the control module and turning
       // on stepper_hooks.c:old_stepper_mode.
@@ -534,8 +555,9 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     get_enc_value(&foo);
 
     path_set_step_target(foo);
-
-    sysstate = SS_CTRL;
+    
+    if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
+      runlevel = RL_CTRL;
     ctrl_enable(CTRL_DARMA);
 
     enable_stepper();
@@ -552,8 +574,9 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     get_enc_value(&foo);
 
     path_set_step_target(foo);
-
-    sysstate = SS_CTRL;
+    
+    if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
+      runlevel = RL_CTRL;
     ctrl_enable(CTRL_COMP);
 
     enable_stepper();
@@ -1029,10 +1052,10 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   case 'f':
     // current move frequency
-    if(SS_FIXED_SPEED == sysstate || SS_MOVE_STEPS == sysstate)
+    if(RL_MANUAL == runlevel)
     {
       parseok = read_int(buf, i, &foo);
-      if(SS_FIXED_SPEED == sysstate)
+      if(M_FIXED_SPEED == manual_mode)
         set_direction(foo < 0);
       set_step_events_per_minute_ctrl((uint32_t)abs(foo));
     }

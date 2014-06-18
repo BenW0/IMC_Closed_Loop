@@ -53,7 +53,6 @@ uint32_t sine_count = 5;
 // Local Variables =====================================================================
 static pathmode_t pathmode;        // Type of path we are running.
 static int32_t step_target = 0;    // step command target
-static msg_queue_move_t curmove;   // current move parameters
 static custom_path_dp_t custom_path[MAX_CUSTOM_PATH_LENGTH];
 static uint32_t custom_path_curloc = 0;   // upcoming location in the custom_path object
 static uint32_t custom_path_length = 0;   // length of current custom_path series.
@@ -94,6 +93,13 @@ void path_set_step_target(int32_t target)
   pathmode = PATH_STEP;
 }
 
+void path_imc(real wait_pos)
+{
+  step_target = wait_pos;
+  start_time = get_systick_tenus();
+  pathmode = PATH_RAMPS_WAITING;
+}
+
 // Implements a trapezoidal velocity profile move, as specified in the same way as packets from 
 // the original IMC interface. References to Eqn are links to the equations listed in my notes,
 // dated 5/31/2014
@@ -106,7 +112,7 @@ void path_ramps_move(const msg_queue_move_t *move, int32_t start_pos)
   // set up the rmove structure. We will convert everything here into tics and seconds, and scale to
   // adjust velocities and accelerations depending on how far we actually need to move (for synchronized
   // motion in more than one axis)
-  ratio = (real)move->length / (real)move->total_length;
+  ratio = (real)fabsf(move->length) / (real)move->total_length;
   rmove.accel = ratio * (real)move->acceleration * enc_tics_per_step * MIN_PER_TENUS_F * MIN_PER_TENUS_F;   // (steps/min^2) * (tics/step) * (min/tenus)^2
   rmove.v_init = ratio * (real)move->initial_rate * enc_tics_per_step * MIN_PER_TENUS_F;              // (steps/min) * (tics/step) * (min/tenus)
   rmove.v_final = ratio * (real)move->final_rate * enc_tics_per_step * MIN_PER_TENUS_F;
@@ -119,8 +125,8 @@ void path_ramps_move(const msg_queue_move_t *move, int32_t start_pos)
   // compute t1 and t2
   rmove.t1 = (rmove.v_nom - rmove.v_init) / rmove.accel;       // Eqn (2). Units: tenus.
   rmove.x1 = rmove.t1 * (rmove.v_init + 0.5f * rmove.accel * rmove.t1);    // Eqn (1)
-  rmove.x2 = rmove.x_total - (rmove.v_final * rmove.v_final - rmove.v_nom * rmove.v_nom) / (2.f * rmove.accel);   // Eqn (9). Units: tics
-  rmove.t2 = rmove.t1 + rmove.x2 / rmove.v_nom;    // Eqn (5). Units: tenus
+  rmove.x2 = rmove.x_total - (rmove.v_nom * rmove.v_nom - rmove.v_final * rmove.v_final) / (2.f * rmove.accel);   // Eqn (9). Units: tics
+  rmove.t2 = rmove.t1 + (rmove.x2 - rmove.x1) / rmove.v_nom;    // Eqn (5). Units: tenus
   rmove.t3 = rmove.t2 + (rmove.v_nom - rmove.v_final) / rmove.accel;
 
   // is this a short move?
@@ -133,7 +139,16 @@ void path_ramps_move(const msg_queue_move_t *move, int32_t start_pos)
     rmove.t3 = (2 * rmove.vp - rmove.v_init - rmove.v_final) / rmove.accel;
   }
 
-  pathmode = PATH_RAMPS;
+  serial_printf("accel = %g, v_init = %g, v_final = %g\n\
+v_nom = %g, x_total = %g, dir = %g\n\
+start_pos = %g t1 = %g, t2 = %g, t3 = %g\n\
+x1 = %g, x2 = %g, short_move = %i, vp = %g\n",
+                rmove.accel, rmove.v_init, rmove.v_final,
+                rmove.v_nom, rmove.x_total, rmove.dir, 
+                rmove.start_pos, rmove.t1, rmove.t2, rmove.t3,
+                rmove.x1, rmove.x2, rmove.short_move, rmove.vp);
+
+  pathmode = PATH_RAMPS_MOVING;
 }
 
 void path_custom_clear(void)
@@ -210,8 +225,13 @@ void path_get_target(volatile real *target_pos, volatile real *target_vel, uint3
     *target_pos = (real)step_target;
     *target_vel = (real)0.;
     break;
-  case PATH_RAMPS :
-    // not implemented yet!
+  case PATH_RAMPS_WAITING:
+    // waiting for a new move packet (buffer was empty last time we tried)
+    //||\\ TODO check for move to dequeue.
+    *target_pos = (real)step_target;
+    *target_vel = (real)0.;
+    break;
+  case PATH_RAMPS_MOVING :
     get_targets_ramps(target_pos, target_vel, elapsed_time);
     break;
   case PATH_CUSTOM :
@@ -304,7 +324,13 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
       *target_vel = rmove.vp - rmove.accel * (t - rmove.t1);
     }
     else    // move finished
-      path_set_step_target(rmove.start_pos + rmove.dir * rmove.x_total);
+    {
+      //||\\TODO Dequeue a new move and start that one, if available. For now, we'll just go to waiting mode
+      pathmode = PATH_RAMPS_WAITING;
+      step_target = rmove.start_pos + rmove.dir * rmove.x_total;
+      *target_pos = rmove.x_total;
+      *target_vel = rmove.v_final;
+    }
   }
   else    // normal move
   {
@@ -322,10 +348,16 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
     else if(t < rmove.t3) // descelerating region
     {
       *target_pos = (rmove.x2 + (t - rmove.t2) * (rmove.v_nom  - 0.5f * (t - rmove.t2) * rmove.accel)); // Eqn (7)
-      *target_vel = rmove.v_nom - rmove.accel * (t - rmove.t2);
+      *target_vel = rmove.v_final + rmove.accel * (rmove.t3 - t);
     }
     else    // move finished
-      path_set_step_target(rmove.start_pos + rmove.dir * rmove.x_total);
+    {
+      pathmode = PATH_RAMPS_WAITING;
+      step_target = rmove.start_pos + rmove.dir * rmove.x_total;
+      *target_pos = rmove.x_total;
+      *target_vel = rmove.v_final;
+    }
   }
   *target_pos = *target_pos * rmove.dir + rmove.start_pos;
+  *target_vel *= TENUS_PER_MIN_F * rmove.dir;   // get velocity back into tics/min.
 }
