@@ -36,7 +36,7 @@ volatile uint32_t out_dir;
 static bool step_hook_set = false;
 static bool (*step_hook)(void);
 static bool exec_hook_set = false;
-static bool (*exec_hook)(void);
+static bool (*exec_hook)(volatile msg_queue_move_t*);
 
 // Reset all stepper parameters, setup clocks, and make sure
 // there is no power to steppers.
@@ -62,7 +62,7 @@ void set_step_hook(bool (*stephook)(void))
   step_hook = stephook;
   step_hook_set = true;
 }
-void set_execute_hook(bool (*exechook)(void))
+void set_execute_hook(bool (*exechook)(volatile msg_queue_move_t *))
 {
   exec_hook = exechook;
   exec_hook_set = true;
@@ -120,6 +120,18 @@ bool get_direction(void)
 	return out_dir > 0;
 }
 
+void float_sync(void)
+{
+  // Configure the sync line as high-z input with an interrupt on logic one. I've had issues
+  // with triggering on the edge...
+  st.state = STATE_SYNC;
+  CONTROL_DDR &= ~SYNC_BIT;
+  SYNC_CTRL = MUX_GPIO | IRQC_ONE;
+  // Start counting down on timer 2
+  PIT_LDVAL2 = SYNC_TIMEOUT;
+  PIT_TCTRL2 |= TEN;
+}
+
 
 void pit0_isr(void) {
   // Set the direction bits. Todo: only do this at the start of a block.
@@ -141,13 +153,7 @@ void pit0_isr(void) {
   }
   
   if(st.state == STATE_SYNC){ // Done with a block, and done with outputting the last pulse
-    // Configure the sync line as high-z input with an interrupt on logic one. I've had issues
-    // with triggering on the edge...
-    CONTROL_DDR &= ~SYNC_BIT;
-    SYNC_CTRL = MUX_GPIO | IRQC_ONE;
-    // Start counting down on timer 2
-    PIT_LDVAL2 = SYNC_TIMEOUT;
-    PIT_TCTRL2 |= TEN;
+    float_sync();
     // Allow this to retrigger next time
     PIT_TFLG0 = 1;
     return;
@@ -280,7 +286,7 @@ void execute_move(void){
 
   // trigger the hook. If it returns true, skip the rest of the init (it will be handled elsewhere)
   if(exec_hook_set)
-    if(exec_hook())
+    if(exec_hook(current_block))
       return;
 
   // Initialize this trapezoid generator for this block

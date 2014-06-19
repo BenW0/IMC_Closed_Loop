@@ -44,12 +44,13 @@ typedef float real;
 // To implement this in other projects, include:
 // SYST_RVR = (F_CPU / 1000) * SYSTICK_UPDATE_MS - 1; //in main
 // and add the systick_isr at the bottom of main. Note the builtin delay() stops working; use
-// delay_real() below.
-#define SYSTICK_UPDATE_TEN_US      1000     // Frequency of update for systic timer (default Teensy is 1ms)
+// delay_real() below. Because imc needs delay(), I have reverted the system to use 1ms updates again.
+#define SYSTICK_UPDATE_TEN_US      100     // Frequency of update for systic timer (default Teensy is 1ms)
 extern volatile uint32_t systick_tenus_count;     // millisecond counter which updates every SYSTICK_UPDATE_MS ms.
+extern volatile uint32_t systick_millis_count;
 __attribute__ ((always_inline)) inline uint32_t get_systick_tenus(void)
 {
-  uint32_t val = systick_tenus_count +   // accumulated 10*us
+  uint32_t val = systick_millis_count * SYSTICK_UPDATE_TEN_US +   // accumulated 10*us      was systick_tenus_count
     (SYST_RVR - SYST_CVR) * 1000L / (F_CPU / 100L);  // 10*us on the timer now
   return val;
 }

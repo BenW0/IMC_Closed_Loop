@@ -7,6 +7,19 @@
 
 parameters_t parameters;
 
+// hooks to allow the user of the imc module to extend the parameters interface.
+static void (*param_reset_hook)(void) = NULL;
+static void (*param_get_hook)(volatile msg_get_param_t* ,rsp_get_param_t* ) = NULL;
+static void (*param_set_hook)(volatile msg_set_param_t* ) = NULL;
+
+void set_param_hooks(void (*reset_hook)(void), void (*get_hook)(volatile msg_get_param_t* ,rsp_get_param_t* ),
+                void (*set_hook)(volatile msg_set_param_t*))
+{
+  param_reset_hook = reset_hook;
+  param_get_hook = get_hook;
+  param_set_hook = set_hook;
+}
+
 void reset_parameters(void){
   parameters.error_low = 0;
   parameters.error_high = 0;
@@ -22,6 +35,9 @@ void reset_parameters(void){
   parameters.slowdown = 0;
   parameters.sync_error = 0;
   parameters.last_home = 0;
+
+  if(param_reset_hook)
+    param_reset_hook();
 }
 
 static uint32_t const_to_mask(imc_axis_parameter c){
@@ -112,6 +128,9 @@ void handle_get_parameter(volatile msg_get_param_t* msg,rsp_get_param_t* rsp){
   default:
     ;
   }
+
+  if(param_get_hook)
+    param_get_hook(msg, rsp);
 }
 
 void handle_set_parameter(volatile msg_set_param_t* msg){
@@ -174,4 +193,7 @@ void handle_set_parameter(volatile msg_set_param_t* msg){
   default:
     break;
   }
+  
+  if(param_set_hook)
+    param_set_hook(msg);
 }

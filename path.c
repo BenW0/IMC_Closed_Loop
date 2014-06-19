@@ -29,6 +29,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "imc/stepper.h"
 #include "imc/utils.h"
 #include "qdenc.h"
 #include "spienc.h"
@@ -57,6 +58,7 @@ static custom_path_dp_t custom_path[MAX_CUSTOM_PATH_LENGTH];
 static uint32_t custom_path_curloc = 0;   // upcoming location in the custom_path object
 static uint32_t custom_path_length = 0;   // length of current custom_path series.
 static uint32_t start_time = 0;    // time we started the current move.
+static real last_target_pos = 0;
 
 static struct {
   real accel;
@@ -78,6 +80,7 @@ static struct {
 
   real vp;      // peak velocity in the event a move doesn't reach v_nom.
 } rmove;
+static real ramps_endpos = 0;
 
 static float sine_freqs[SINE_COUNT];    // rad/tenus
 
@@ -89,13 +92,14 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
 void path_set_step_target(int32_t target)
 {
   step_target = target;
+  ramps_endpos = target;    // in case we do a ramps move next...
   start_time = get_systick_tenus();
   pathmode = PATH_STEP;
 }
 
 void path_imc(real wait_pos)
 {
-  step_target = wait_pos;
+  ramps_endpos = wait_pos;
   start_time = get_systick_tenus();
   pathmode = PATH_RAMPS_WAITING;
 }
@@ -103,9 +107,16 @@ void path_imc(real wait_pos)
 // Implements a trapezoidal velocity profile move, as specified in the same way as packets from 
 // the original IMC interface. References to Eqn are links to the equations listed in my notes,
 // dated 5/31/2014
-void path_ramps_move(const msg_queue_move_t *move, int32_t start_pos)
+void path_ramps_move(volatile msg_queue_move_t *move)
 {
   real ratio;
+
+  // put us in waiting mode, just in case the stepper interrupt runs while we're processing this section.
+  if(PATH_RAMPS_MOVING == pathmode)
+  {
+    ramps_endpos = rmove.start_pos + rmove.x_total * rmove.dir;
+    pathmode = PATH_RAMPS_WAITING;
+  }
 
   start_time = get_systick_tenus();   //||\\ Change this later?
 
@@ -120,7 +131,7 @@ void path_ramps_move(const msg_queue_move_t *move, int32_t start_pos)
   rmove.x_total = fabsf((real)move->length) * enc_tics_per_step;
   rmove.dir = move->length >= 0 ? 1.f : -1.f;
 
-  rmove.start_pos = (real)start_pos;      // position defined as "x = 0"
+  rmove.start_pos = (real)ramps_endpos;      // position defined as "x = 0"
 
   // compute t1 and t2
   rmove.t1 = (rmove.v_nom - rmove.v_init) / rmove.accel;       // Eqn (2). Units: tenus.
@@ -139,14 +150,14 @@ void path_ramps_move(const msg_queue_move_t *move, int32_t start_pos)
     rmove.t3 = (2 * rmove.vp - rmove.v_init - rmove.v_final) / rmove.accel;
   }
 
-  serial_printf("accel = %g, v_init = %g, v_final = %g\n\
+  /*serial_printf("accel = %g, v_init = %g, v_final = %g\n\
 v_nom = %g, x_total = %g, dir = %g\n\
 start_pos = %g t1 = %g, t2 = %g, t3 = %g\n\
 x1 = %g, x2 = %g, short_move = %i, vp = %g\n",
                 rmove.accel, rmove.v_init, rmove.v_final,
                 rmove.v_nom, rmove.x_total, rmove.dir, 
                 rmove.start_pos, rmove.t1, rmove.t2, rmove.t3,
-                rmove.x1, rmove.x2, rmove.short_move, rmove.vp);
+                rmove.x1, rmove.x2, rmove.short_move, rmove.vp);*/
 
   pathmode = PATH_RAMPS_MOVING;
 }
@@ -208,7 +219,6 @@ void path_sines_setfreq(float new_base_freq)
 void path_get_target(volatile real *target_pos, volatile real *target_vel, uint32_t curtime)
 {
   static uint32_t last_time = 0;
-  static real last_target_pos = 0;
   uint32_t i, elapsed_time;
   int32_t foo;
 
@@ -228,7 +238,7 @@ void path_get_target(volatile real *target_pos, volatile real *target_vel, uint3
   case PATH_RAMPS_WAITING:
     // waiting for a new move packet (buffer was empty last time we tried)
     //||\\ TODO check for move to dequeue.
-    *target_pos = (real)step_target;
+    *target_pos = (real)ramps_endpos;
     *target_vel = (real)0.;
     break;
   case PATH_RAMPS_MOVING :
@@ -310,6 +320,19 @@ void path_get_target(volatile real *target_pos, volatile real *target_vel, uint3
 // gets the targets when in a RAMPS move, using the contents of the rmove structure.
 void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uint32_t t)
 {
+  // check for stepper module errors (IMC end stop hit, etc.)
+  if(st.state != STATE_EXECUTE)
+  {
+    // Something went horribly wrong!
+    serial_printf("'Unexpected stepper state change in get_targets_ramps!\n");
+    // just station-keep here.
+    *target_pos = last_target_pos;
+    *target_vel = 0.f;
+    pathmode = PATH_RAMPS_WAITING;
+    ramps_endpos = last_target_pos;
+    return;
+  }
+
   // short move?
   if(rmove.short_move)   // we never reach the flat part of the trapezoid. This move has a trianglular velocity profile
   {
@@ -327,9 +350,10 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
     {
       //||\\TODO Dequeue a new move and start that one, if available. For now, we'll just go to waiting mode
       pathmode = PATH_RAMPS_WAITING;
-      step_target = rmove.start_pos + rmove.dir * rmove.x_total;
+      ramps_endpos = rmove.start_pos + rmove.dir * rmove.x_total;
       *target_pos = rmove.x_total;
       *target_vel = rmove.v_final;
+      float_sync();   // tell the stepper module to float the sync line, signaling we're finished with the move.
     }
   }
   else    // normal move
@@ -353,9 +377,10 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
     else    // move finished
     {
       pathmode = PATH_RAMPS_WAITING;
-      step_target = rmove.start_pos + rmove.dir * rmove.x_total;
+      ramps_endpos = rmove.start_pos + rmove.dir * rmove.x_total;
       *target_pos = rmove.x_total;
       *target_vel = rmove.v_final;
+      float_sync();   // tell the stepper module to float the sync line, signaling we're finished with the move.
     }
   }
   *target_pos = *target_pos * rmove.dir + rmove.start_pos;

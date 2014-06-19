@@ -11,6 +11,16 @@
 #define PULSE_LENGTH 2 // General pulse length / propagation delay for all stepper signals
 #define MICROS_PER_TICK (1000000L / ACCELERATION_TICKS_PER_SECOND)
 
+bool (*homing_start_hook_fun)(void) = NULL;
+void (*homing_end_hook_fun)(void) = NULL;
+
+// Give the host module access to override the homing routine, or make appropriate changes to 
+// ensure any higher-level controller doesn't freak out.
+void set_homing_hooks(bool (*start_hook)(), void (*end_hook)())
+{
+  homing_start_hook_fun = start_hook;
+  homing_end_hook_fun = end_hook;
+}
 
 static int32_t untrigger_limit(uint32_t mask, uint32_t invert_mask, uint32_t speed){
   int32_t steps = 0;
@@ -21,6 +31,7 @@ static int32_t untrigger_limit(uint32_t mask, uint32_t invert_mask, uint32_t spe
     steps++;
     delay_microseconds(speed);
   }
+  usb_serial_write("Untriggered\n", 13);
   return steps;
 }
 
@@ -33,6 +44,7 @@ static int32_t trigger_limit(uint32_t mask, uint32_t invert_mask, uint32_t speed
     steps++;
     delay_microseconds(speed);
   }
+  usb_serial_write("Triggered\n", 11);
   return steps;
 }
 static void take_steps(uint32_t steps, uint32_t speed){
@@ -42,6 +54,7 @@ static void take_steps(uint32_t steps, uint32_t speed){
     STEPPER_PORT(COR) = STEP_BIT;
     delay_microseconds(speed);
   }
+  usb_serial_write("Steps\n", 7);
 }
 
 // name changed to avoid conflicts with the new stepper.c:set_direction() method.
@@ -60,6 +73,18 @@ void enter_homing_routine(void){
     st.state = STATE_ERROR; // Probably should set a real error code
     return;
   }
+  usb_serial_write("1", 1);
+
+  // notify the host module we are in the homing routine.
+  if(homing_start_hook_fun)
+    if(homing_start_hook_fun())
+    {
+      if(homing_end_hook_fun)
+        homing_end_hook_fun();
+      return;   // the hook dealt with it.
+    }
+  usb_serial_write("2", 1);
+
   homing = parameters.homing;
   // Disable the appropriate hard limit function - choose the side we're homing to, don't change the pull-up
   // state, and pass a homing bit mask that results in either direction disabled.
@@ -96,4 +121,7 @@ void enter_homing_routine(void){
   // restore hard limits
   delay(10);
   configure_limit_gpio(homing & HOME_DIR, PRESERVE_PULLUP, homing);
+
+  if(homing_end_hook_fun)
+    homing_end_hook_fun();
 }

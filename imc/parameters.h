@@ -34,6 +34,10 @@ typedef struct {
 
 extern parameters_t parameters;
 
+// parameter hooks allow the host project to extend the list of parameters without further code modifications.
+void set_param_hooks(void (*reset_hook)(void), void (*get_hook)(volatile msg_get_param_t* ,rsp_get_param_t* ),
+                void (*set_hook)(volatile msg_set_param_t*));
+
 void reset_parameters(void);
 void handle_get_parameter(volatile msg_get_param_t*,rsp_get_param_t*);
 void handle_set_parameter(volatile msg_set_param_t*);

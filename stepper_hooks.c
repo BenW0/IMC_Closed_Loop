@@ -5,26 +5,39 @@
 #include "imc/hardware.h"
 #include "imc/stepper.h"
 #include "imc/parameters.h"
+#include "imc/homing.h"
+
+#include "ctrl.h"
+#include "path.h"
+#include "qdenc.h"
+#include "spienc.h"
 
 
 // Global Variables ==================================================================
 bool old_stepper_mode = false;      // use stock IMC stepper isr code.
+extern float enc_tics_per_step;
+extern float steps_per_enc_tic;
 
 // Local Variables ===================================================================
 volatile int32_t steps_to_go = -1;
 static uint32_t old_steps_per_minute = MINIMUM_STEPS_PER_MINUTE;
 static uint32_t new_cycles_per_step_event = MINIMUM_STEPS_PER_MINUTE;
 bool force_steps_per_minute = true;   // force the stepper module to reset its counter ever update?
+static ctrl_mode old_ctrl_mode;       // used in homing to store the old control mode while control is disabled.
 //static char message[100];
 
 // Function Predeclares ==============================================================
 bool step_hook();
-bool exec_hook();
+bool exec_hook(volatile msg_queue_move_t *);
+
+bool homing_start_hook();
+void homing_end_hook();
 
 
 void init_stepper_hooks(void){
   set_step_hook(step_hook);
   set_execute_hook(exec_hook);
+  set_homing_hooks(homing_start_hook, homing_end_hook);
 }
 
 
@@ -154,12 +167,35 @@ void start_moving(void){
 // but it's implemented as a hook in imc/stepper.c, so here it is.
 // As with step_hook, returns true if we've handled the event
 // and false if legacy behavior should be implemented.
-bool exec_hook(void)
+bool exec_hook(volatile msg_queue_move_t *current_block)
 {
   if(old_stepper_mode)
     return false;   // don't do anything with path.c; retain legacy behavior.
   
-  // all the interesting stuff is handled in path.c -- we just needed
-  // to determine whether to keep legacy code or not.
+  // tell the path module to run a block.
+  if(current_block)
+    path_ramps_move(current_block);
   return true;
+}
+
+// homing_start_hook: Hook called when the homing routine is begun.
+// We will use this to disable the controller while homing. Otherwise the
+// homing movement could be seen as a disturbance and the controller might try
+// to correct for it.
+//
+// NOTE: If we returned true, we would override the default imc homing routine.
+bool homing_start_hook()
+{
+  old_ctrl_mode = ctrl_get_mode();
+  ctrl_enable(CTRL_DISABLED);
+  serial_printf("'Homing Start Hook\n");
+  return false;
+}
+void homing_end_hook()
+{
+  // set the encoder position.
+  set_enc_value((int32_t)((float)get_motor_position() * enc_tics_per_step));
+  serial_printf("'Homing End Hook\n");
+  // re-enable control.
+  ctrl_enable(old_ctrl_mode);
 }

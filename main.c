@@ -125,6 +125,7 @@
 #include "common.h"
 
 #include "stepper_hooks.h"
+#include "param_hooks.h"
 #include "qdenc.h"
 #include "ctrl.h"
 #include "path.h"
@@ -143,7 +144,7 @@ typedef enum {
 } runlevel_e;
 
 // Global Variables ==========================================================
-//extern volatile uint32_t systick_millis_count;    // system millisecond timer
+extern volatile uint32_t systick_millis_count;    // system millisecond timer
 extern float pid_kp, pid_ki, pid_kd;
 extern float max_ctrl_vel, min_ctrl_vel;
 extern bool pos_ctrl_mode;
@@ -227,6 +228,7 @@ int main()
 
   // set up the stepper hooks into the IMC module
   init_stepper_hooks();
+  init_param_hooks();
 
   delay_real(100);
 
@@ -335,6 +337,8 @@ void parse_usb(void)
       set_steps_to_go(-1);
       start_moving();
       moving = true;
+
+      float_sync();   // tell the stepper module to float the sync line, signaling we're ready for a move.
       break;
     case 'm':
       // move a specified number of steps.
@@ -672,7 +676,8 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       msg.final_rate = ramps_move_params[4];
       msg.acceleration = ramps_move_params[5];
       get_enc_value(&foo);
-      path_ramps_move(&msg, foo);
+      path_imc(foo);
+      path_ramps_move(&msg);
     }
     break;
 
@@ -1220,8 +1225,10 @@ void set_enc_tics_per_step(float etps)
 }
 
 // We are orverriding the systic ISR provided by Teensy because it now counts
-// in 10ms increments instead of 1ms.
+// in 10ms increments instead of 1ms. To keep compatibility with delay(), which
+// imc needs, I have reverted this to the stock version.
 void systick_isr(void)
 {
-  systick_tenus_count += SYSTICK_UPDATE_TEN_US;
+  //systick_tenus_count += SYSTICK_UPDATE_TEN_US;
+  systick_millis_count++;
 }
