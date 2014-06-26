@@ -12,12 +12,10 @@
  * University of Washington
  *
  * TODO:
- *  - merge the IMC move dequeueing with the path module -- how?
  *  - implement velocity clamping before fault check so step inputs
  *    aren't interpreted as faults.
- *  - finish implementing osac control.
  *  - fix/re-enable the endstop cuttoffs in control_isr.c
- *  - Figure out how to handle imc-triggered homing.
+ *  - Fix encoder reader losing track when in homing routine/
  *
  * Pinnout: This code is developed against a Teensy 3.1 MK20DX256 chip.
  *  PB18, PB19 <--> 32, 25 - quadrature inputs
@@ -112,6 +110,7 @@
  *             {length, total_length, initial_rate, nominal_rate, final_rate, acceleration}. All elements are int32_t type.
  *             For this vector, all distances are in motor steps and all times are in minutes.
  *    q - encoder tics per step (float)
+ *    s - Stream control history in real time. Boolean (0 = false, 1 = true)
  *    u - last controller update time (in ms), read only
  *
  *  Note: Responses meant to be human-readible (i.e. Debug strings for ctrl_design_gui) start with an apostrophe (')
@@ -144,7 +143,7 @@ typedef enum {
 } runlevel_e;
 
 // Global Variables ==========================================================
-extern volatile uint32_t systick_millis_count;    // system millisecond timer
+//extern volatile uint32_t systick_millis_count;    // system millisecond timer
 extern float pid_kp, pid_ki, pid_kd;
 extern float max_ctrl_vel, min_ctrl_vel;
 extern bool pos_ctrl_mode;
@@ -161,6 +160,7 @@ extern real comp_C_num[FILTER_MAX_SIZE];
 extern real comp_C_den[FILTER_MAX_SIZE - 1];
 extern real comp_F_num[FILTER_MAX_SIZE];
 extern real comp_F_den[FILTER_MAX_SIZE - 1];
+extern bool stream_ctrl_hist;
 
 char message[200];
 runlevel_e runlevel = RL_IDLE;
@@ -197,6 +197,7 @@ int main()
 
   // change the cpu systic clock to only roll over every SYSTICK_UPDATE_MS milliseconds:
   SYST_RVR = (F_CPU / 1000) * (SYSTICK_UPDATE_TEN_US / 100L) - 1;
+  systick_millis_count = 0;
 
   //reset_hardware();
   //initialize_stepper_state();
@@ -314,7 +315,7 @@ void parse_usb(void)
         set_direction(foo < 0);
         set_step_events_per_minute_ctrl((uint32_t)fabsf(foo));
       }
-      sprintf(message, "'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
+      sprintf(message, "'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
       usb_serial_write(message, strlen(message));
       ctrl_enable(CTRL_DISABLED);
       enable_stepper();
@@ -338,7 +339,7 @@ void parse_usb(void)
       start_moving();
       moving = true;
 
-      float_sync();   // tell the stepper module to float the sync line, signaling we're ready for a move.
+      enter_sync_state();   // tell the stepper module to float the sync line, signaling we're ready for a move.
       break;
     case 'm':
       // move a specified number of steps.
@@ -400,7 +401,7 @@ void parse_usb(void)
             i += read;
             set_direction(foo < 0);
             set_step_events_per_minute_ctrl((uint32_t)abs(foo));
-            sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
+            sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
             usb_serial_write(message, strlen(message));
           }
           else
@@ -743,7 +744,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
 
   case 'f':
     // current move frequency
-    serial_printf("%li\n", (long)(get_direction() ? 1 : -1) * (long)get_step_events_per_minute());
+    serial_printf("%li\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
     break;
   case 'o':
     // current show encoder frequency
@@ -855,7 +856,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           break;
         case 'f':
           // kcf - F denominator vector
-          target = comp_F_num;
+          target = comp_F_den;
           m--;
           break;
         }
@@ -864,7 +865,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           for(; m > 0; m--)
             if(0.f != target[m])
               break;
-          serial_printf("'m= %i.\n", (int)m);
+          //serial_printf("'m= %i.\n", (int)m);
           message[0] = 0;
           for(uint32_t k = 0; k <= m; k++)
           {
@@ -874,7 +875,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           strcat(message, "\n");
           usb_serial_write(message, strlen(message));
         }
-        serial_printf("'get complete\n");
+        //serial_printf("'get complete\n");
       }
       break;
 
@@ -888,6 +889,10 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
   case 'q':
     // encoder tics per step (float)
     serial_printf("%f\n", enc_tics_per_step);
+    break;
+  case 's':
+    // stream ctrl history
+    serial_printf("%i\n", (int)stream_ctrl_hist);
     break;
   case 'p':
     // path mode variables:
@@ -1160,6 +1165,12 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     // encoder tics per step
     parseok = read_float(buf, i, &ffoo);
     set_enc_tics_per_step(ffoo);
+    break;
+  case 's':
+    // stream ctrl history
+    parseok = read_int(buf, i, &foo);
+    stream_ctrl_hist = (foo != 0);
+    serial_printf("Streaming Set: %i", (int)stream_ctrl_hist);
     break;
   case 'p':
     // Path sine mode parameters

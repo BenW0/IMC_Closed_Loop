@@ -120,13 +120,12 @@ bool get_direction(void)
 	return out_dir > 0;
 }
 
-void float_sync(void)
+void enter_sync_state(void)
 {
   // Configure the sync line as high-z input with an interrupt on logic one. I've had issues
   // with triggering on the edge...
   st.state = STATE_SYNC;
-  CONTROL_DDR &= ~SYNC_BIT;
-  SYNC_CTRL = MUX_GPIO | IRQC_ONE;
+  enable_sync_interrupt();
   // Start counting down on timer 2
   PIT_LDVAL2 = SYNC_TIMEOUT;
   PIT_TCTRL2 |= TEN;
@@ -153,7 +152,7 @@ void pit0_isr(void) {
   }
   
   if(st.state == STATE_SYNC){ // Done with a block, and done with outputting the last pulse
-    float_sync();
+    enter_sync_state();
     // Allow this to retrigger next time
     PIT_TFLG0 = 1;
     return;

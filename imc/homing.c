@@ -92,7 +92,7 @@ void enter_homing_routine(void){
   // Make sure our motor is enabled 
   enable_stepper();
   // If the flip bit is asserted, we should home to the opposite of the home direction bit
-  direction_bit = (homing & FLIP_AXIS) ^ ((homing & HOME_DIR) >> 1);
+  direction_bit = !((homing & FLIP_AXIS) ^ ((homing & HOME_DIR) >> 1));   // I think this not being inverted was a bug.
   set_homing_direction(direction_bit);
 
   inv_homing_feed = MICROS_PER_MINUTE / parameters.homing_feedrate;

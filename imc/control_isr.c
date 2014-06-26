@@ -52,6 +52,7 @@ void portb_isr(void){
 	execute_move();
 	break;
       }
+      break;  //||\\!! FIXME - this break added to keep from erroring while debugging the control flow.
       // Otherwise fall through and set an error condition
     case STATE_EXECUTE:
       // This should never happen - if we're in execute, we should hold the line low and not enable this interrupt...
@@ -72,6 +73,7 @@ void pit2_isr(void){
 
   if(PIT_LDVAL2 != SYNC_DELAY){
     // We've timed out and bad things are happening   
+    return;//||\\!! FIXME - For debugging I don't want a timeout error, so I am disabling this code!
     st.state = STATE_ERROR;
     parameters.error_low = IMC_ERR_TIMEOUT; // Maybe not best error code, but...
     stop_motion();

@@ -92,30 +92,30 @@ bool step_hook(void) {
   
 
   // check for end stop states (this needed as a safety net for testing) //||\\!
-  if(get_direction())   // going forward?
+  if(get_direction())   // going backwards?
   {
     // logic: Trigger a pulse if we are going forward, and
     // if the endstop is not enabled, step anyway.
     // if the endstop pin matches the invert flag, we can step.
-    if(!(parameters.homing & ENABLE_MAX) || (((CONTROL_PORT(DIR) & MAX_LIMIT_BIT) ? 1 : 0) == (parameters.homing & INVERT_MAX ? 1 : 0)))
-      trigger_pulse();
-    else
-    {
-      // the endstop is asserted.
-      sprintf(message, "'Max Endstop Assert!\n");
-      usb_serial_write(message, strlen(message));
-    }
-  }
-  else    // going backwards
-  {
-    if(!(parameters.homing & ENABLE_MIN) || (((CONTROL_PORT(DIR) & MIN_LIMIT_BIT) ? 1 : 0) == (parameters.homing & INVERT_MIN ? 1 : 0)))
-      trigger_pulse();
-    else
+    if(parameters.homing & ENABLE_MIN && (((CONTROL_PORT(DIR) & MIN_LIMIT_BIT) ? 1 : 0) != (parameters.homing & INVERT_MIN ? 1 : 0)))
     {
       // the endstop is asserted.
       sprintf(message, "'Min Endstop Assert!\n");
       usb_serial_write(message, strlen(message));
     }
+    else
+      trigger_pulse();
+  }
+  else    // going forwards
+  {
+    if(parameters.homing & ENABLE_MAX && (((CONTROL_PORT(DIR) & MAX_LIMIT_BIT) ? 1 : 0) != (parameters.homing & INVERT_MAX ? 1 : 0)))
+    {
+      // the endstop is asserted.
+      sprintf(message, "'Max Endstop Assert!\n");
+      usb_serial_write(message, strlen(message));
+    }
+    else
+      trigger_pulse();
   }
 
 

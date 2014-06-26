@@ -9,7 +9,7 @@ typedef enum
   CTRL_PID,          // PID control mode
   CTRL_BANG,         // bang-bang control mode
   CTRL_DARMA,        // DARMA control mode
-  CTRL_COMP           // compensating filter controller
+  CTRL_COMP,         // compensating filter controller
 } ctrl_mode;
 
 

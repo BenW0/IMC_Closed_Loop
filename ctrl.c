@@ -54,15 +54,14 @@ float fault_thresh = 10.f;        // change in error between commanded and actua
 real osac_As[10] = {0., 0.};      // A is assumed monic, so all we store is A1..A10
 real osac_Bs[10] = {1.};          // B is not monic, so we store B0..B9
 uint32_t osac_Acount = 2, osac_Bcount = 1;
+bool stream_ctrl_hist = false;    // turn on streaming of control history over usb in real time.
 
 real darma_R[FILTER_MAX_SIZE] = {1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 real darma_S[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 real darma_T[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 
-real comp_C_gain = 0.;
 real comp_C_num[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 real comp_C_den[FILTER_MAX_SIZE - 1] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
-real comp_F_gain = 1.;
 real comp_F_num[FILTER_MAX_SIZE] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 real comp_F_den[FILTER_MAX_SIZE - 1] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 
@@ -361,6 +360,13 @@ void pit3_isr(void)
   //hist_data[hist_head].velocity = last_vel;
   hist_data[hist_head].pos_error_deriv = pos_error_deriv;
   hist_data[hist_head].cmd_velocity = ctrl_out;
+
+  // write it out right now (testing!)
+  if(stream_ctrl_hist)
+  {
+    usb_serial_write("$", 1);
+    usb_serial_write(hist_data + hist_head, sizeof(hist_data_t));
+  }
 
 
   // the output was encoder tics per minute; we want that back in motor steps/minute

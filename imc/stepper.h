@@ -48,7 +48,7 @@ void initialize_stepper_state(void);
 void set_step_hook(bool (*stephook)(void));
 void set_execute_hook(bool (*exechook)(volatile msg_queue_move_t *));
 // floats the sync line, signaling move completion
-void float_sync(void);
+void enter_sync_state(void);
 // sets the step frequency
 uint32_t config_step_timer(uint32_t cycles);
 // direction commands
