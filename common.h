@@ -66,6 +66,27 @@ __attribute__ ((always_inline)) inline void delay_real(uint32_t ms)
     ;
 } 
 
+// Sometimes for bitbanging a bus I need finer delay control than delay_microseconds. Below is a function
+// wich delays only 1/8 (0.125) us per tic
+static inline void delay_0125us(uint32_t) __attribute__((always_inline, unused));
+static inline void delay_0125us(uint32_t tics)
+{
+#if F_CPU == 96000000
+	uint32_t n = tics << 2;
+#elif F_CPU == 48000000
+	uint32_t n = tics << 1;
+#elif F_CPU == 24000000
+	uint32_t n = tics;
+#endif
+	if (tics == 0) return;
+	asm volatile(
+		"L_%=_delay_microseconds:"		"\n\t"
+		"subs   %0, #1"				"\n\t"
+		"bne    L_%=_delay_microseconds"		"\n"
+		: "+r" (n) :
+	);
+}
+
 // a few time-related constants
 #define TENUS_PER_MIN_F       ((float)6.e6)
 #define TENUS_PER_MIN_I       6000000L

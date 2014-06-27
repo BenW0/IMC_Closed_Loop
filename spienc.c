@@ -13,6 +13,8 @@
 #include <usb_serial.h>
 #include <string.h>
 #include <stdio.h>
+#include <pin_config.h>
+#include <util.h>
 
 #include "spienc.h"
 
@@ -40,13 +42,29 @@ static int32_t offset = 0;
 // Local Function Defines ====================================
 void read_enc(void);
 uint8_t read_spi(uint32_t *value);
+uint32_t spibitbang_read(void);
  
 
 // enc_init()
 // Initializes the SPI interface and the device as required.
 void enc_Init(void)
 {
+#ifdef ENC_USE_SPIFIFO
   spififo_begin(10, SPI_CLOCK_1MHz, SPI_MODE2);
+#else
+  // setup the pins
+  ENC_SCK_CTRL = STANDARD_OUTPUT;
+  ENC_SCK_PORT(DDR) |= ENC_SCK_BIT;
+  SCK_ON();
+
+  ENC_DIN_CTRL = MUX_GPIO;
+  ENC_DIN_PORT(DDR) &= ~ENC_DIN_BIT;
+
+  ENC_CS_CTRL = STANDARD_OUTPUT;
+  ENC_CS_PORT(DDR) |= ENC_CS_BIT;
+  CS_ON();
+#endif    // !ENC_USE_SPFIFO
+
   last_update_tenus = get_systick_tenus();
 
   if(read_spi(&readval))
@@ -88,12 +106,11 @@ void read_enc(void)
       {
         if(!lost_track)
         {
-          sprintf(message, "'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", 
+          serial_printf("'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", 
             (unsigned int)labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), 
             (unsigned int)readval, 
             (unsigned int)last_readval, 
             (unsigned int)(time - last_update_tenus));
-          usb_serial_write(message, strlen(message));
         }
         lost_track = true;
       }
@@ -135,13 +152,18 @@ uint8_t read_spi(uint32_t *value)
   // we need to block the control interrupt from firing while we read the serial port (if it fires half way through
   // reading, we'll be in big trouble!)
   SET_BASEPRI(2<<4);
+#ifdef ENC_USE_SPIFIFO
 	spififo_write16(0x1234, 1);
 	spififo_write16(0x1234, 0);
 	uint32_t inp = spififo_read();
 	uint32_t inp2 = spififo_read();
+	inp = (inp << 16) | inp2;
+#else
+  uint32_t inp;
+  inp = spibitbang_read();
+#endif
   CLEAR_BASEPRI();
 
-	inp = (inp << 16) | inp2;
 	// first bit (msb) is garbage
 	inp &= 0x7fffffff;
 	// next 12 bits are the reading
@@ -160,12 +182,38 @@ uint8_t read_spi(uint32_t *value)
 	// valid packet if ocf = 1, cof = 0, lin = 0, mag_inc and mag_dec not both 1, parcheck == par.
 	if(!ocf || cof || lin || (mag_inc && mag_dec) || parcheck != par)
   {
-    sprintf(message, "'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
-    usb_serial_write(message,strlen(message));
+    //||\\!!serial_printf("'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
+    //usb_serial_write(message,strlen(message));
 		return 1;
   }
 	*value = rd;
 	return 0;
+}
+
+// This routine bitbangs pins (see spienc.h for pinnout) to read the encoder. This is NOT a full implementation of 
+// software SPI, but just enough to do the job for the chip at hand. As a result, message length, etc. is hard coded.
+uint32_t spibitbang_read()
+{
+  uint32_t data = 0;
+  // pull down CS to signal the start of a transfer. SCK should have been left high after the last round.
+  CS_OFF();
+  delay_microseconds(1);    // >600 ns
+
+  for(uint8_t i = 0; i < 18; ++i)
+  {
+    SCK_OFF();
+    // Take the reading
+    data |= (DIN_READ() << (31 - i));
+    delay_0125us(4);    // 500 ns
+    SCK_ON();
+    delay_0125us(4);    // 500 ns
+  }
+  // read one last bit (parity) without cycling the clock back down
+  data |= (DIN_READ() << 12);   // (31 - 19)
+  // signal end of read...
+  CS_ON();
+
+  return data;
 }
 
 #endif

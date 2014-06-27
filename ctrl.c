@@ -189,8 +189,7 @@ void ctrl_enable(ctrl_mode newmode)
     {
       if(fabsf(darma_R[0]) < 1.e-6)   // somewhat arbitrary, but in my experience this is way too small to work.
       {
-        sprintf(message, "'Very small value of R[0] means DARMA is not going to be stable! Please choose a larger R[0]");
-        usb_serial_write(message, strlen(message));
+        serial_printf("'Very small value of R[0] means DARMA is not going to be stable! Please choose a larger R[0]");
         ctrl_enable(CTRL_DISABLED);
         return;
       }
@@ -236,17 +235,16 @@ void output_history(void)
   // start at the tail and write to the end of the buffer, then catch back up to the head
   // (which may move...)
   old_head_loc = hist_head;
-  sprintf(message, "%u\n", HIST_SIZE);   // # of entries we're going to print
-  usb_serial_write(message, strlen(message));
+  serial_printf("%u\n", HIST_SIZE);   // # of entries we're going to print
   // the serial port can't take all this data at once, so we'll give it to them in bites...
   for(uint32_t chunk = old_head_loc + 1; chunk < HIST_SIZE - 1; chunk += 100)
   {
-    usb_serial_write((void*)(hist_data + chunk), sizeof(hist_data_t) * min(HIST_SIZE - chunk, 100));
+    serial_write((void*)(hist_data + chunk), sizeof(hist_data_t) * min(HIST_SIZE - chunk, 100));
     delay_real(30);
   }
   for(uint32_t chunk = 0; chunk < old_head_loc + 1; chunk += 100)
   {
-    usb_serial_write((void*)(hist_data + chunk), sizeof(hist_data_t) * min(old_head_loc + 1 - chunk, 100));
+    serial_write((void*)(hist_data + chunk), sizeof(hist_data_t) * min(old_head_loc + 1 - chunk, 100));
     delay_real(30);
   }
 }
@@ -333,8 +331,8 @@ void pit3_isr(void)
     if(fault_check(encpos, ctrl_out, &pos_error_deriv))
     {
       // We have a fault! Do something intelligent!!!! //||\\!!!
-      //sprintf(message, "Fault detected!\n");
-      //usb_serial_write(message, strlen(message));
+      //serial_printf("Fault detected!\n");
+      //
     }
     ctrl_out = -((real)motorpos * enc_tics_per_step - ctrl_out) / ctrl_period_sec * 60;    // see notebook, 5/7/14
     //ctrl_out = -(encpos - ctrl_out) / ctrl_period_sec * 60;
@@ -362,11 +360,11 @@ void pit3_isr(void)
   hist_data[hist_head].cmd_velocity = ctrl_out;
 
   // write it out right now (testing!)
-  if(stream_ctrl_hist)
-  {
-    usb_serial_write("$", 1);
-    usb_serial_write(hist_data + hist_head, sizeof(hist_data_t));
-  }
+  //if(stream_ctrl_hist)
+  //{
+  //  usb_serial_write("$", 1);
+  //  usb_serial_write(hist_data + hist_head, sizeof(hist_data_t));
+  //}
 
 
   // the output was encoder tics per minute; we want that back in motor steps/minute
@@ -401,15 +399,15 @@ void pit3_isr(void)
 	//if(update_time < ctrl_period_cycles)
  // {
 	//	set_update_cycles(ctrl_period_cycles - update_time);
- //   //sprintf(message, "Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, ctrl_period_cycles - update_time);
+ //   //serial_printf("Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, ctrl_period_cycles - update_time);
  // }
 	//else
  // {
 	//	set_update_cycles(100);		// wait some minimum time before firing again
- //   //sprintf(message, "Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, 100);
+ //   //serial_printf("Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, 100);
  // }
  // 
- // //usb_serial_write(message, strlen(message));
+ // //
 	//
   // clear the interrupt flag
   PIT_TFLG3 = 1;
@@ -450,14 +448,14 @@ void bang_ctrl(real dt, real target_pos, real target_vel, real encpos)
     if(encpos < target_pos)
     {
       set_direction(false);
-      //sprintf(message, "enc: %f target: %f diff: %f FORWARD\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
-      //usb_serial_write(message, strlen(message));
+      //serial_printf("enc: %f target: %f diff: %f FORWARD\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
+      //
     }
     else
     {
       set_direction(true);
-      //sprintf(message, "enc: %f target: %f diff: %f BACKWARDS\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
-      //usb_serial_write(message, strlen(message));
+      //serial_printf("enc: %f target: %f diff: %f BACKWARDS\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
+      //
     }
     trigger_pulse();    // backdoor to fire a step RIGHT NOW
   }

@@ -131,12 +131,12 @@ void ftm2_isr(void)
        Diff = 0;
      if( FTM2_QDCTRL & FTM_QDCTRL_QUADIR_MASK )
      {
-			sprintf(message, "%u, %u, %u UP\n", C0V, C1V, Diff);
+			serial_printf("%u, %u, %u UP\n", C0V, C1V, Diff);
 			usb_serial_write(message,strlen(message));
      }
      else
      {
-			sprintf(message, "%u, %u, %u DN\n", C0V, C1V, Diff);
+			serial_printf("%u, %u, %u DN\n", C0V, C1V, Diff);
 			usb_serial_write(message,strlen(message));
      }
      FTM2_C0SC = /*FTM_CnSC_CHIE_MASK | */FTM_CnSC_MSA_MASK | FTM_CnSC_ELSA_MASK;
@@ -164,12 +164,12 @@ void cpm1_isr(void)
 	isr2_count++;
   if( CMP1_SCR & CMP_SCR_CFR_MASK )
   {
-	sprintf(message, "%lu rise\n", FTM2_CNT);
+	serial_printf("%lu rise\n", FTM2_CNT);
     usb_serial_write(message,strlen(message));
   }
   else
   {
-	sprintf(message, "%lu fall\n", FTM2_CNT);
+	serial_printf("%lu fall\n", FTM2_CNT);
     usb_serial_write(message,strlen(message));
   }
     

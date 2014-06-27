@@ -18,14 +18,24 @@
  *  - Fix encoder reader losing track when in homing routine/
  *
  * Pinnout: This code is developed against a Teensy 3.1 MK20DX256 chip.
- *  PB18, PB19 <--> 32, 25 - quadrature inputs
- *  PC2 <--> 23 - encoder index (neither used nor tested)
+ *  0, 1 <--> PB16, PB17 - Min and Max limit switches
+ *  2-5 <--> PD0, PA12, PA13, PD7 - I2C Address Offset (after Base Address) (pin 2 is bit 0)
+ *  6-8 <--> PD4, PD2, PD3 - Motor Driver microstepping mode
+ *  (disabled) 8 <--> PD3 - controller heartbeat (this bit toggles every time the controller updates)
+ *  9 <--> PC3 - Stepper Disable
  *  SPI interface for SPI-reading encoder:
- *    PC4 <--> 10 - CS
- *    PC6 <--> 11 - DOUT
- *    PC7 <--> 12 - DIN
- *    PC5 <--> 13 - SCK
- *  (disabled) PD3 <--> 8 - controller heartbeat (this bit toggles every time the controller updates)
+ *    10 <--> PC4 - CS
+ *    11 <--> PC6 - DOUT
+ *    12 <--> PC7 - DIN
+ *    13 <--> PC5 - SCK
+ *  15 <--> PC0 - Step
+ *  16 <--> PB0 - Global sync line
+ *  18 <--> PB3 - I2C SDA
+ *  19 <--> PB2 - I2C SC
+ *  20, 21, 22 <--> PD5, PD6, PC1 - SCK, DIN, CS of bitbanged SPI interface to encoder reader (when spienc.h:ENC_USE_SPIFIFO is not defined)
+ *  22 <--> PC1 - Direction
+ *  23 <--> PC2 - encoder index (neither used nor tested)
+ *  25, 32 <--> PB19, PB18 - quadrature inputs
  *  
  *  The motor interface is described in in imc/hardware.h and imc/peripheral.h. NOTE that to accommodate SPI interface
  *  to the sensor, pinnouts for the motor driver have changed!
@@ -253,9 +263,9 @@ int main()
 	  {
       next_encoder_time = get_systick_tenus() + show_encoder_time * 100;
       if(get_enc_value(&value))
-        sprintf(message, "'%li**\n", value);   // signal we lost track!
+        serial_printf("'%li**\n", value);   // signal we lost track!
       else
-        sprintf(message, "'%li\n", value);
+        serial_printf("'%li\n", value);
       usb_serial_write(message,strlen(message));
     }
     
@@ -263,7 +273,7 @@ int main()
     {
       // done with move!
       get_enc_value(&value);
-      sprintf(message, "'Move complete. New step position = %li; Encoder position = %li\n", (long)get_motor_position(), (long)value);
+      serial_printf("'Move complete. New step position = %li; Encoder position = %li\n", (long)get_motor_position(), (long)value);
       usb_serial_write(message,strlen(message));
       moving = false;
     }
@@ -300,8 +310,7 @@ void parse_usb(void)
       moving = false;
       disable_stepper();
       
-      sprintf(message, "'Idle mode\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Idle mode\n");
 
       break;
     case 'f':
@@ -315,8 +324,8 @@ void parse_usb(void)
         set_direction(foo < 0);
         set_step_events_per_minute_ctrl((uint32_t)fabsf(foo));
       }
-      sprintf(message, "'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
+      
       ctrl_enable(CTRL_DISABLED);
       enable_stepper();
       set_steps_to_go(-1);
@@ -357,16 +366,15 @@ void parse_usb(void)
         runlevel = RL_MANUAL;
         manual_mode = M_MOVE_STEPS;
         get_enc_value(&foo2);
-        sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n'  Current encoder value = %li\n", get_motor_position(), foo, foo2);
-        usb_serial_write(message, strlen(message));
+        serial_printf(message, "'Move Steps mode. Moving from %li by %li steps\n'  Current encoder value = %li\n", get_motor_position(), foo, foo2);
+
         enable_stepper();
         start_moving();
         moving = true;
       }
       else
       {
-        sprintf(message, "'Couldn't parse a distance to move!\n");
-        usb_serial_write(message, strlen(message));
+        serial_printf("'Couldn't parse a distance to move!\n");
         runlevel = RL_IDLE;
         ctrl_enable(CTRL_DISABLED);
         moving = false;
@@ -401,13 +409,11 @@ void parse_usb(void)
             i += read;
             set_direction(foo < 0);
             set_step_events_per_minute_ctrl((uint32_t)abs(foo));
-            sprintf(message, "'Moving at %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
-            usb_serial_write(message, strlen(message));
+            serial_printf("'Moving at %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
           }
           else
           {
-            sprintf(message, "'Didn't understand new f value\n");
-            usb_serial_write(message, strlen(message));
+            serial_printf("'Didn't understand new f value\n");
           }
         }
         else
@@ -419,8 +425,8 @@ void parse_usb(void)
             set_direction((foo) < 0);
             set_steps_to_go((uint32_t)abs(foo));
             get_enc_value(&foo2);
-            sprintf(message, "'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
-            usb_serial_write(message, strlen(message));
+            serial_printf("'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
+            
             start_moving();
             moving = true;
           }
@@ -435,8 +441,8 @@ void parse_usb(void)
           path_set_step_target(foo);
 
           get_enc_value(&foo2);
-          sprintf(message, "'Stepping from %li to %li\n", foo2, foo);
-          usb_serial_write(message, strlen(message));
+          serial_printf("'Stepping from %li to %li\n", foo2, foo);
+          
         }
         break;
       case RL_IDLE :
@@ -466,14 +472,14 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
       path_set_step_target(foo);
 
       get_enc_value(&foo2);
-      sprintf(message, "'PID control mode. Step path from %li to %li\n", foo, foo2);
-      usb_serial_write(message, strlen(message));
+      serial_printf("'PID control mode. Step path from %li to %li\n", foo, foo2);
+      
     }
     else
     {
       // don't change the path mode unless we got a value.
-      sprintf(message, "'PID control mode.\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'PID control mode.\n");
+      
     }
     if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
       runlevel = RL_CTRL;
@@ -511,8 +517,8 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
       start_moving();
       moving = true;
 
-      sprintf(message, "'Unity control mode.\n'Encoder read time: %f ms\n", (float)update_time * 1000.f / (float)F_BUS);
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Unity control mode.\n'Encoder read time: %f ms\n", (float)update_time * 1000.f / (float)F_BUS);
+      
       break;
     }
   case 'b':
@@ -528,8 +534,8 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     start_moving();
     moving = true;
 
-    sprintf(message, "'Bang-bang control mode.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'Bang-bang control mode.\n");
+    
     break;
   case 'l':
     // Legacy control mode
@@ -544,14 +550,14 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
 
       moving = true;
 
-      sprintf(message, "'Legacy control mode.\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Legacy control mode.\n");
+      
     }
     else
     {
       // complain
-      sprintf(message, "'Legacy control mode can't be used when not in IMC mode!\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Legacy control mode can't be used when not in IMC mode!\n");
+      
     }
     break;
   case 'd':
@@ -569,8 +575,8 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     start_moving();
     moving = true;
 
-    sprintf(message, "'DARMA control mode.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'DARMA control mode.\n");
+    
     
     break;
   case 'c':
@@ -592,8 +598,8 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     
     break;
   default :
-    sprintf(message, "'Unrecognized command.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'Unrecognized command.\n");
+    
     break;
   }
 }
@@ -615,15 +621,15 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       *i += read;
 
       get_enc_value(&foo2);
-      sprintf(message, "'Step path mode. Stepping from %li to %li\n", foo2, foo);
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Step path mode. Stepping from %li to %li\n", foo2, foo);
+      
     }
     else
     {
       get_enc_value(&foo);
 
-      sprintf(message, "'Step path mode.\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Step path mode.\n");
+      
     }
     path_set_step_target(foo);
     
@@ -644,8 +650,8 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       }
       else
       {
-        sprintf(message, "'Failed to parse path element!\n");
-        usb_serial_write(message, strlen(message));
+        serial_printf("'Failed to parse path element!\n");
+        
       }
       break;
     case 's':   // pcs
@@ -655,8 +661,8 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       path_custom_clear();
       break;
     default :
-      sprintf(message, "'Unrecognized command.\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Unrecognized command.\n");
+      
       break;
     }
     break;
@@ -683,8 +689,8 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
     break;
 
   default :
-    sprintf(message, "'Unrecognized command.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'Unrecognized command.\n");
+    
     break;
   }
 }
@@ -695,8 +701,8 @@ void serial_printf(const char *str, ...)
 {
   va_list args;
   va_start(args, str);
-  vsprintf(message, str, args);
-  usb_serial_write(message, strlen(message));
+  vserial_printf(str, args);
+  
   va_end(args);
 }
 
@@ -790,8 +796,8 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
       break;
     case 'd':
       {
-        sprintf(message, "'Get started.\n");
-        usb_serial_write(message, strlen(message));
+        serial_printf("'Get started.\n");
+        
         // DARMA control parameters
         real *target = NULL;
         int32_t m = 0;
@@ -811,8 +817,8 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           break;
         default :
           // didn't understand
-          sprintf(message, "Unknown command.\n");
-          usb_serial_write(message, strlen(message));
+          serial_printf("Unknown command.\n");
+          
           break;
         }
         if(target)
@@ -828,7 +834,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
             strcat(message, msg_build);
           }
           strcat(message, "\n");
-          usb_serial_write(message, strlen(message));
+          serial_write(message, strlen(message));
         }
         serial_printf("'get complete\n");
       }
@@ -873,7 +879,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
             strcat(message, msg_build);
           }
           strcat(message, "\n");
-          usb_serial_write(message, strlen(message));
+          serial_write(message, strlen(message));
         }
         //serial_printf("'get complete\n");
       }
@@ -923,7 +929,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
         strcat(message, msg_build);
       }
       strcat(message, "\n");
-      usb_serial_write(message, strlen(message));
+      serial_write(message, strlen(message));
     }
     break;
   case 'd':
@@ -1071,8 +1077,8 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     }
     else
     {
-      sprintf(message, "'Cannot set step frequency when not in Fixed Step mode or Move Steps mode!\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Cannot set step frequency when not in Fixed Step mode or Move Steps mode!\n");
+      
       parseok = true;
     }
     break;
@@ -1201,8 +1207,8 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   default :
     // didn't understand!
-    sprintf(message, "'I didn't understand which parameter you want to query.\n");
-    usb_serial_write(message, strlen(message));
+    serial_printf("'I didn't understand which parameter you want to query.\n");
+    
     parseok = true;
   }
   if(!parseok)

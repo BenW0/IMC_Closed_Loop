@@ -100,8 +100,8 @@ bool step_hook(void) {
     if(parameters.homing & ENABLE_MIN && (((CONTROL_PORT(DIR) & MIN_LIMIT_BIT) ? 1 : 0) != (parameters.homing & INVERT_MIN ? 1 : 0)))
     {
       // the endstop is asserted.
-      sprintf(message, "'Min Endstop Assert!\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Min Endstop Assert!\n");
+      
     }
     else
       trigger_pulse();
@@ -111,8 +111,8 @@ bool step_hook(void) {
     if(parameters.homing & ENABLE_MAX && (((CONTROL_PORT(DIR) & MAX_LIMIT_BIT) ? 1 : 0) != (parameters.homing & INVERT_MAX ? 1 : 0)))
     {
       // the endstop is asserted.
-      sprintf(message, "'Max Endstop Assert!\n");
-      usb_serial_write(message, strlen(message));
+      serial_printf("'Max Endstop Assert!\n");
+      
     }
     else
       trigger_pulse();
