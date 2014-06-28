@@ -152,6 +152,9 @@ typedef enum {
   RL_IMC          // IMC mode - listening to i2c bus for instructions. Implies controller is active and path is in ramps mode
 } runlevel_e;
 
+#define USB_RX_TIMEOUT     2    // ms to wait for a packet before continuing the idle loop
+#define USB_INPUT_BUF_SIZE 150  // characters.
+
 // Global Variables ==========================================================
 //extern volatile uint32_t systick_millis_count;    // system millisecond timer
 extern float pid_kp, pid_ki, pid_kd;
@@ -189,8 +192,11 @@ static char msg_build[30];
 static uint32_t show_encoder_time = 0;
 static bool moving = false;
 static int32_t ramps_move_params[6] = {0, 0, 0, 0, 0, 0};
+static char usb_input_buffer[USB_INPUT_BUF_SIZE];
+static uint32_t input_buf_len = 0;
 
 // Function Predeclares ======================================================
+int get_usb_line(char *dest, uint32_t dest_size);
 void parse_usb();
 void parse_ctrl_msg(const char *buf, uint32_t *i, uint32_t count);
 void parse_path_msg(const char *buf, uint32_t *i, uint32_t count);
@@ -253,28 +259,30 @@ int main()
     if(RL_IMC == runlevel)
       imc_idle();   // IMC main loop
 
-    if(usb_serial_available() > 0)
+    if(hid_avail() > 0)
     {
       parse_usb();
     }
+    //||\\!! Just for testing
+    hid_flush(5);
 
     
     if(show_encoder_time > 0 && get_systick_tenus() > next_encoder_time)
 	  {
       next_encoder_time = get_systick_tenus() + show_encoder_time * 100;
       if(get_enc_value(&value))
-        serial_printf("'%li**\n", value);   // signal we lost track!
+        hid_printf("'%li**\n", value);   // signal we lost track!
       else
-        serial_printf("'%li\n", value);
-      usb_serial_write(message,strlen(message));
+        hid_printf("'%li\n", value);
+      //usb_serial_write(message,strlen(message));
     }
     
     if(RL_MANUAL == runlevel && M_MOVE_STEPS == manual_mode && get_steps_to_go() == -1 && moving)
     {
       // done with move!
       get_enc_value(&value);
-      serial_printf("'Move complete. New step position = %li; Encoder position = %li\n", (long)get_motor_position(), (long)value);
-      usb_serial_write(message,strlen(message));
+      hid_printf("'Move complete. New step position = %li; Encoder position = %li\n", (long)get_motor_position(), (long)value);
+      //usb_serial_write(message,strlen(message));
       moving = false;
     }
 #ifndef USE_QD_ENC
@@ -283,19 +291,56 @@ int main()
   }
 }
 
+// This code assumes we won't get more than one command per packet!!
+int get_usb_line(char *dest, uint32_t dest_size)
+{
+  uint32_t count;
+  // packets are not null-terminated!
+  //Collect packets until we see a zero character...since our packets are now small, it is possible some commands
+  // (especially vector commands) may not complete in a single packet.
+
+  for(;;) {
+    if(input_buf_len + input_buf_len > USB_INPUT_BUF_SIZE)
+    {
+      // this is too long a line! Ignore it and get out of here.
+      input_buf_len = 0;
+      return 0;
+    }
+    count = hid_read((uint8_t*)usb_input_buffer + input_buf_len, USB_RX_TIMEOUT);
+    if(!count)    // no (complete) packet read; return 0 but keep the partial packet for next time.
+      return 0;
+
+    input_buf_len += RAWHID_TX_SIZE;
+    //hid_printf("Got a packet %02X %02X %02X %02X!\n", usb_input_buffer[0], usb_input_buffer[1], usb_input_buffer[2], usb_input_buffer[3]);
+
+    // check for zero characters --> we have a complete command.
+    for(uint32_t i = 0; i < RAWHID_TX_SIZE; i++)
+      if(0 == usb_input_buffer[input_buf_len - RAWHID_TX_SIZE + i])
+      {
+        // complete string found. Send this off and clear the buffer.
+        memcpy((void*)dest, (void*)usb_input_buffer, min(input_buf_len - RAWHID_TX_SIZE + i + 1, dest_size - 1));
+        dest[dest_size-1] = 0;    // just in case the input buffer was too long.
+        input_buf_len = 0;
+        hid_printf("Got a line: '%s'\n", dest);
+        return 1;
+      }
+  }
+}
+
 // Parses the serial input
 void parse_usb(void)
 {
-  char buf[100];
+  char buf[USB_INPUT_BUF_SIZE];
   uint32_t count = 0;
   int read = 0;
   int32_t foo, foo2;
   uint32_t i;
   
-  count = usb_serial_read(buf, min(usb_serial_available(), 100));
-  // packets are not null-terminated!
-  if(count < 100)
-    buf[count] = '\0';
+  if(!get_usb_line(buf, USB_INPUT_BUF_SIZE))
+    return;   // nothing to be done.
+
+  count = strlen(buf);    // get_usb_line guarantees null-terminate strings.
+  
   for(i = 0; i < count; i++)
   {
     switch(buf[i++])
@@ -310,7 +355,7 @@ void parse_usb(void)
       moving = false;
       disable_stepper();
       
-      serial_printf("'Idle mode\n");
+      hid_printf("'Idle mode\n");
 
       break;
     case 'f':
@@ -324,7 +369,7 @@ void parse_usb(void)
         set_direction(foo < 0);
         set_step_events_per_minute_ctrl((uint32_t)fabsf(foo));
       }
-      serial_printf("'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
+      hid_printf("'Fixed mode. Rate: %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
       
       ctrl_enable(CTRL_DISABLED);
       enable_stepper();
@@ -334,7 +379,7 @@ void parse_usb(void)
       break;
     case 'n':   // IMC network mode
       runlevel = RL_IMC;
-      serial_printf("'IMC network mode\n");
+      hid_printf("'IMC network mode\n");
       
       // turn on a controller, if there isn't one already
       if(ctrl_get_mode() == CTRL_DISABLED && !old_stepper_mode)
@@ -366,7 +411,7 @@ void parse_usb(void)
         runlevel = RL_MANUAL;
         manual_mode = M_MOVE_STEPS;
         get_enc_value(&foo2);
-        serial_printf(message, "'Move Steps mode. Moving from %li by %li steps\n'  Current encoder value = %li\n", get_motor_position(), foo, foo2);
+        hid_printf(message, "'Move Steps mode. Moving from %li by %li steps\n'  Current encoder value = %li\n", get_motor_position(), foo, foo2);
 
         enable_stepper();
         start_moving();
@@ -374,7 +419,7 @@ void parse_usb(void)
       }
       else
       {
-        serial_printf("'Couldn't parse a distance to move!\n");
+        hid_printf("'Couldn't parse a distance to move!\n");
         runlevel = RL_IDLE;
         ctrl_enable(CTRL_DISABLED);
         moving = false;
@@ -409,11 +454,11 @@ void parse_usb(void)
             i += read;
             set_direction(foo < 0);
             set_step_events_per_minute_ctrl((uint32_t)abs(foo));
-            serial_printf("'Moving at %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
+            hid_printf("'Moving at %li steps/min\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
           }
           else
           {
-            serial_printf("'Didn't understand new f value\n");
+            hid_printf("'Didn't understand new f value\n");
           }
         }
         else
@@ -425,7 +470,7 @@ void parse_usb(void)
             set_direction((foo) < 0);
             set_steps_to_go((uint32_t)abs(foo));
             get_enc_value(&foo2);
-            serial_printf("'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
+            hid_printf("'Move Steps mode. Moving from %li by %li steps\n  Current encoder value = %li\n", get_motor_position(), foo, foo2);
             
             start_moving();
             moving = true;
@@ -441,7 +486,7 @@ void parse_usb(void)
           path_set_step_target(foo);
 
           get_enc_value(&foo2);
-          serial_printf("'Stepping from %li to %li\n", foo2, foo);
+          hid_printf("'Stepping from %li to %li\n", foo2, foo);
           
         }
         break;
@@ -472,13 +517,13 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
       path_set_step_target(foo);
 
       get_enc_value(&foo2);
-      serial_printf("'PID control mode. Step path from %li to %li\n", foo, foo2);
+      hid_printf("'PID control mode. Step path from %li to %li\n", foo, foo2);
       
     }
     else
     {
       // don't change the path mode unless we got a value.
-      serial_printf("'PID control mode.\n");
+      hid_printf("'PID control mode.\n");
       
     }
     if(runlevel < RL_CTRL)    // don't kick us out of imc mode if we're in it.
@@ -517,7 +562,7 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
       start_moving();
       moving = true;
 
-      serial_printf("'Unity control mode.\n'Encoder read time: %f ms\n", (float)update_time * 1000.f / (float)F_BUS);
+      hid_printf("'Unity control mode.\n'Encoder read time: %f ms\n", (float)update_time * 1000.f / (float)F_BUS);
       
       break;
     }
@@ -534,7 +579,7 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     start_moving();
     moving = true;
 
-    serial_printf("'Bang-bang control mode.\n");
+    hid_printf("'Bang-bang control mode.\n");
     
     break;
   case 'l':
@@ -550,13 +595,13 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
 
       moving = true;
 
-      serial_printf("'Legacy control mode.\n");
+      hid_printf("'Legacy control mode.\n");
       
     }
     else
     {
       // complain
-      serial_printf("'Legacy control mode can't be used when not in IMC mode!\n");
+      hid_printf("'Legacy control mode can't be used when not in IMC mode!\n");
       
     }
     break;
@@ -575,7 +620,7 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     start_moving();
     moving = true;
 
-    serial_printf("'DARMA control mode.\n");
+    hid_printf("'DARMA control mode.\n");
     
     
     break;
@@ -594,11 +639,11 @@ void parse_ctrl_msg(const char * buf, uint32_t *i, uint32_t count)
     start_moving();
     moving = true;
 
-    serial_printf("'Compensating control mode.\n");
+    hid_printf("'Compensating control mode.\n");
     
     break;
   default :
-    serial_printf("'Unrecognized command.\n");
+    hid_printf("'Unrecognized command.\n");
     
     break;
   }
@@ -621,14 +666,14 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       *i += read;
 
       get_enc_value(&foo2);
-      serial_printf("'Step path mode. Stepping from %li to %li\n", foo2, foo);
+      hid_printf("'Step path mode. Stepping from %li to %li\n", foo2, foo);
       
     }
     else
     {
       get_enc_value(&foo);
 
-      serial_printf("'Step path mode.\n");
+      hid_printf("'Step path mode.\n");
       
     }
     path_set_step_target(foo);
@@ -650,7 +695,7 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       }
       else
       {
-        serial_printf("'Failed to parse path element!\n");
+        hid_printf("'Failed to parse path element!\n");
         
       }
       break;
@@ -661,7 +706,7 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
       path_custom_clear();
       break;
     default :
-      serial_printf("'Unrecognized command.\n");
+      hid_printf("'Unrecognized command.\n");
       
       break;
     }
@@ -689,21 +734,10 @@ void parse_path_msg(const char * buf, uint32_t *i, uint32_t count)
     break;
 
   default :
-    serial_printf("'Unrecognized command.\n");
+    hid_printf("'Unrecognized command.\n");
     
     break;
   }
-}
-
-// helper function for parse_get_param. Writes a single value of type typecode (i.e. for printf - %f, %i, etc)
-// to the serial console. Note this is basically a simplified wrapper on printf that only allows one parameter.
-void serial_printf(const char *str, ...)
-{
-  va_list args;
-  va_start(args, str);
-  vserial_printf(str, args);
-  
-  va_end(args);
 }
 
 // Parses a Get Parameter message
@@ -715,21 +749,21 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
   {
   case 'a':
     // maximum control value
-    serial_printf("%f\n", max_ctrl_vel);
+    hid_printf("%f\n", max_ctrl_vel);
     break;
   case 'i':
     // minimum control value
-    serial_printf("%f\n", min_ctrl_vel);
+    hid_printf("%f\n", min_ctrl_vel);
     break;
   case 't':
     // encoder tic count
     if(!get_enc_value(&foo))
     {
-      serial_printf("%li\n", (long)foo); //
+      hid_printf("%li\n", (long)foo); //
     }
     else
     {
-      serial_printf("%li\n'Lost Track!\n", (long)foo); //
+      hid_printf("%li\n'Lost Track!\n", (long)foo); //
     }
     
     break;
@@ -739,22 +773,22 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     {
     case 'f':
       // mf - force counter reset on update
-      serial_printf("%li\n", (long)force_steps_per_minute);
+      hid_printf("%li\n", (long)force_steps_per_minute);
       break;
     case 'p':
       // mp - motor step position
-      serial_printf("%li\n", (long)get_motor_position());
+      hid_printf("%li\n", (long)get_motor_position());
       break;
     }
     break;
 
   case 'f':
     // current move frequency
-    serial_printf("%li\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
+    hid_printf("%li\n", (long)(get_direction() ? -1 : 1) * (long)get_step_events_per_minute());
     break;
   case 'o':
     // current show encoder frequency
-    serial_printf("%lu\n", (unsigned long)show_encoder_time);
+    hid_printf("%lu\n", (unsigned long)show_encoder_time);
     break;
   case 'k':
     // Control parameters
@@ -766,37 +800,37 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
       {
       case 'p':
         // kpp - proportional constant
-        serial_printf("%f\n", pid_kp);
+        hid_printf("%f\n", pid_kp);
         break;
       case 'i':
         // kpi - integral constant
-        serial_printf("%f\n", pid_ki);
+        hid_printf("%f\n", pid_ki);
         break;
       case 'd':
         // kpd - derivative constant
-        serial_printf("%f\n", pid_kd);
+        hid_printf("%f\n", pid_kd);
         break;
       }
       break;
     case 'm':
       // km - control to position mode
-      serial_printf("%i\n", pos_ctrl_mode ? 1 : 0);
+      hid_printf("%i\n", pos_ctrl_mode ? 1 : 0);
       break;
     case 'f':
       // kf - feedforward advance time (update steps)
-      serial_printf("%lu\n", ctrl_feedforward_advance);
+      hid_printf("%lu\n", ctrl_feedforward_advance);
       break;
     case 't':
       // fault threshold
-      serial_printf("%f\n", fault_thresh);
+      hid_printf("%f\n", fault_thresh);
       break;
     case 'u' :
       // controller update period (in ms)
-      serial_printf("%f\n", ctrl_get_period() / 1000.f);
+      hid_printf("%f\n", ctrl_get_period() / 1000.f);
       break;
     case 'd':
       {
-        serial_printf("'Get started.\n");
+        hid_printf("'Get started.\n");
         
         // DARMA control parameters
         real *target = NULL;
@@ -817,7 +851,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           break;
         default :
           // didn't understand
-          serial_printf("Unknown command.\n");
+          hid_printf("Unknown command.\n");
           
           break;
         }
@@ -826,7 +860,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           for(m = FILTER_MAX_SIZE - 1; m > 0; m--)
             if(0.f != target[m])
               break;
-          serial_printf("'m= %i.\n", (int)m);
+          hid_printf("'m= %i.\n", (int)m);
           message[0] = 0;
           for(uint32_t k = 0; k <= m; k++)
           {
@@ -834,9 +868,9 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
             strcat(message, msg_build);
           }
           strcat(message, "\n");
-          serial_write(message, strlen(message));
+          hid_print(message, strlen(message), 100);
         }
-        serial_printf("'get complete\n");
+        hid_printf("'get complete\n");
       }
       break;
       
@@ -871,7 +905,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
           for(; m > 0; m--)
             if(0.f != target[m])
               break;
-          //serial_printf("'m= %i.\n", (int)m);
+          //hid_printf("'m= %i.\n", (int)m);
           message[0] = 0;
           for(uint32_t k = 0; k <= m; k++)
           {
@@ -879,9 +913,9 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
             strcat(message, msg_build);
           }
           strcat(message, "\n");
-          serial_write(message, strlen(message));
+          hid_print(message, strlen(message), 100);
         }
-        //serial_printf("'get complete\n");
+        //hid_printf("'get complete\n");
       }
       break;
 
@@ -890,15 +924,15 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
 
   case 'u':
     // last controller update time
-    serial_printf("%f\n", ctrl_get_update_time());
+    hid_printf("%f\n", ctrl_get_update_time());
     break;
   case 'q':
     // encoder tics per step (float)
-    serial_printf("%f\n", enc_tics_per_step);
+    hid_printf("%f\n", enc_tics_per_step);
     break;
   case 's':
     // stream ctrl history
-    serial_printf("%i\n", (int)stream_ctrl_hist);
+    hid_printf("%i\n", (int)stream_ctrl_hist);
     break;
   case 'p':
     // path mode variables:
@@ -906,19 +940,19 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     {
     case 'c':
       // pc - sine count
-      serial_printf("%lu\n", sine_count);
+      hid_printf("%lu\n", sine_count);
       break;
     case 'f':
       // pf - sine frequency base (hz)
-      serial_printf("%f\n", sine_freq_base);
+      hid_printf("%f\n", sine_freq_base);
       break;
     case 'a':
       // pa - sine amplitude
-      serial_printf("%f\n", sine_amp);
+      hid_printf("%f\n", sine_amp);
       break;
     case 'r':
       // pr - random move scale
-      serial_printf("%f\n", rand_scale);
+      hid_printf("%f\n", rand_scale);
       break;
     case 'm':
       // pm - ramps-style move parameters
@@ -929,7 +963,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
         strcat(message, msg_build);
       }
       strcat(message, "\n");
-      serial_write(message, strlen(message));
+      hid_print(message, strlen(message), 100);
     }
     break;
   case 'd':
@@ -938,7 +972,7 @@ void parse_get_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   default :
     // didn't understand!
-    serial_printf("'I didn't understand which parameter you want to query.\n");
+    hid_printf("'I didn't understand which parameter you want to query.\n");
   }
 }
 
@@ -1077,7 +1111,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     }
     else
     {
-      serial_printf("'Cannot set step frequency when not in Fixed Step mode or Move Steps mode!\n");
+      hid_printf("'Cannot set step frequency when not in Fixed Step mode or Move Steps mode!\n");
       
       parseok = true;
     }
@@ -1176,7 +1210,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     // stream ctrl history
     parseok = read_int(buf, i, &foo);
     stream_ctrl_hist = (foo != 0);
-    serial_printf("Streaming Set: %i", (int)stream_ctrl_hist);
+    hid_printf("Streaming Set: %i", (int)stream_ctrl_hist);
     break;
   case 'p':
     // Path sine mode parameters
@@ -1207,13 +1241,13 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     break;
   default :
     // didn't understand!
-    serial_printf("'I didn't understand which parameter you want to query.\n");
+    hid_printf("'I didn't understand which parameter you want to query.\n");
     
     parseok = true;
   }
   if(!parseok)
   {
-    serial_printf("'Failed to parse new value.\n");
+    hid_printf("'Failed to parse new value.\n");
   }
 }
 

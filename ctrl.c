@@ -189,7 +189,7 @@ void ctrl_enable(ctrl_mode newmode)
     {
       if(fabsf(darma_R[0]) < 1.e-6)   // somewhat arbitrary, but in my experience this is way too small to work.
       {
-        serial_printf("'Very small value of R[0] means DARMA is not going to be stable! Please choose a larger R[0]");
+        hid_printf("'Very small value of R[0] means DARMA is not going to be stable! Please choose a larger R[0]");
         ctrl_enable(CTRL_DISABLED);
         return;
       }
@@ -235,17 +235,26 @@ void output_history(void)
   // start at the tail and write to the end of the buffer, then catch back up to the head
   // (which may move...)
   old_head_loc = hist_head;
-  serial_printf("%u\n", HIST_SIZE);   // # of entries we're going to print
+  hid_printf("%u\n", HIST_SIZE);   // # of entries we're going to print
   // the serial port can't take all this data at once, so we'll give it to them in bites...
+  // We don't want to wait too long, however, so we'll put a timeout of 30ms on the transmits.
   for(uint32_t chunk = old_head_loc + 1; chunk < HIST_SIZE - 1; chunk += 100)
   {
-    serial_write((void*)(hist_data + chunk), sizeof(hist_data_t) * min(HIST_SIZE - chunk, 100));
-    delay_real(30);
+    for(uint32_t i = 0; i < 3; i++)   // retry the packet up to 3 times.
+    {
+      delay_real(30);
+      if(hid_print((void*)(hist_data + chunk), sizeof(hist_data_t) * min(HIST_SIZE - chunk, 100), 30))
+        break;
+    }
   }
   for(uint32_t chunk = 0; chunk < old_head_loc + 1; chunk += 100)
   {
-    serial_write((void*)(hist_data + chunk), sizeof(hist_data_t) * min(old_head_loc + 1 - chunk, 100));
-    delay_real(30);
+    for(uint32_t i = 0; i < 3; i++)   // retry the packet up to 3 times.
+    {
+      delay_real(30);
+      if(hid_print((void*)(hist_data + chunk), sizeof(hist_data_t) * min(old_head_loc + 1 - chunk, 100), 30))
+        break;
+    }
   }
 }
 
@@ -331,7 +340,7 @@ void pit3_isr(void)
     if(fault_check(encpos, ctrl_out, &pos_error_deriv))
     {
       // We have a fault! Do something intelligent!!!! //||\\!!!
-      //serial_printf("Fault detected!\n");
+      //hid_printf("Fault detected!\n");
       //
     }
     ctrl_out = -((real)motorpos * enc_tics_per_step - ctrl_out) / ctrl_period_sec * 60;    // see notebook, 5/7/14
@@ -399,12 +408,12 @@ void pit3_isr(void)
 	//if(update_time < ctrl_period_cycles)
  // {
 	//	set_update_cycles(ctrl_period_cycles - update_time);
- //   //serial_printf("Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, ctrl_period_cycles - update_time);
+ //   //hid_printf("Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, ctrl_period_cycles - update_time);
  // }
 	//else
  // {
 	//	set_update_cycles(100);		// wait some minimum time before firing again
- //   //serial_printf("Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, 100);
+ //   //hid_printf("Old: %lu; New: %lu; Diff: %li; Target: %lu, Set: %lu\n", old_systic, new_systic, (long int)old_systic - (long int)new_systic, ctrl_period_cycles, 100);
  // }
  // 
  // //
@@ -448,13 +457,13 @@ void bang_ctrl(real dt, real target_pos, real target_vel, real encpos)
     if(encpos < target_pos)
     {
       set_direction(false);
-      //serial_printf("enc: %f target: %f diff: %f FORWARD\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
+      //hid_printf("enc: %f target: %f diff: %f FORWARD\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
       //
     }
     else
     {
       set_direction(true);
-      //serial_printf("enc: %f target: %f diff: %f BACKWARDS\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
+      //hid_printf("enc: %f target: %f diff: %f BACKWARDS\n", encpos, target_pos, encpos - target_pos);   // # of entries we're going to print
       //
     }
     trigger_pulse();    // backdoor to fire a step RIGHT NOW

@@ -31,7 +31,6 @@ static int32_t untrigger_limit(uint32_t mask, uint32_t invert_mask, uint32_t spe
     steps++;
     delay_microseconds(speed);
   }
-  usb_serial_write("Untriggered\n", 13);
   return steps;
 }
 
@@ -44,7 +43,6 @@ static int32_t trigger_limit(uint32_t mask, uint32_t invert_mask, uint32_t speed
     steps++;
     delay_microseconds(speed);
   }
-  usb_serial_write("Triggered\n", 11);
   return steps;
 }
 static void take_steps(uint32_t steps, uint32_t speed){
@@ -54,7 +52,6 @@ static void take_steps(uint32_t steps, uint32_t speed){
     STEPPER_PORT(COR) = STEP_BIT;
     delay_microseconds(speed);
   }
-  usb_serial_write("Steps\n", 7);
 }
 
 // name changed to avoid conflicts with the new stepper.c:set_direction() method.
@@ -73,7 +70,6 @@ void enter_homing_routine(void){
     st.state = STATE_ERROR; // Probably should set a real error code
     return;
   }
-  usb_serial_write("1", 1);
 
   // notify the host module we are in the homing routine.
   if(homing_start_hook_fun)
@@ -83,7 +79,7 @@ void enter_homing_routine(void){
         homing_end_hook_fun();
       return;   // the hook dealt with it.
     }
-  usb_serial_write("2", 1);
+  
 
   homing = parameters.homing;
   // Disable the appropriate hard limit function - choose the side we're homing to, don't change the pull-up

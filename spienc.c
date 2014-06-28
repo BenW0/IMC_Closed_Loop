@@ -106,7 +106,7 @@ void read_enc(void)
       {
         if(!lost_track)
         {
-          serial_printf("'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", 
+          hid_printf("'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", 
             (unsigned int)labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), 
             (unsigned int)readval, 
             (unsigned int)last_readval, 
@@ -182,7 +182,7 @@ uint8_t read_spi(uint32_t *value)
 	// valid packet if ocf = 1, cof = 0, lin = 0, mag_inc and mag_dec not both 1, parcheck == par.
 	if(!ocf || cof || lin || (mag_inc && mag_dec) || parcheck != par)
   {
-    //||\\!!serial_printf("'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
+    //||\\!!hid_printf("'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
     //usb_serial_write(message,strlen(message));
 		return 1;
   }

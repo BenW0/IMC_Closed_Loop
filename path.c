@@ -150,7 +150,7 @@ void path_ramps_move(volatile msg_queue_move_t *move)
     rmove.t3 = (2 * rmove.vp - rmove.v_init - rmove.v_final) / rmove.accel;
   }
 
-  //serial_printf("accel = %g, v_init = %g, v_final = %g\n\
+  //hid_printf("accel = %g, v_init = %g, v_final = %g\n\
 //v_nom = %g, x_total = %g, dir = %g\n\
 //start_pos = %g t1 = %g, t2 = %g, t3 = %g\n\
 //x1 = %g, x2 = %g, short_move = %i, vp = %g\n",
@@ -324,7 +324,7 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
   if(st.state != STATE_EXECUTE)
   {
     // Something went horribly wrong!
-    serial_printf("'Unexpected stepper state change in get_targets_ramps!\n");
+    hid_printf("'Unexpected stepper state change in get_targets_ramps!\n");
     // just station-keep here.
     *target_pos = last_target_pos;
     *target_vel = 0.f;
@@ -351,7 +351,7 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
     {
       pathmode = PATH_RAMPS_WAITING;
       ramps_endpos = rmove.start_pos + rmove.dir * rmove.x_total;
-      //serial_printf("'Done with short move. Last: %f, Current: %f, Next: %f, Time, %lu\n", last_target_pos, *target_pos * rmove.dir + rmove.start_pos, ramps_endpos, get_systick_tenus());
+      //hid_printf("'Done with short move. Last: %f, Current: %f, Next: %f, Time, %lu\n", last_target_pos, *target_pos * rmove.dir + rmove.start_pos, ramps_endpos, get_systick_tenus());
       *target_pos = ramps_endpos;
       *target_vel = rmove.v_final;
       enter_sync_state();   // tell the stepper module to float the sync line, signaling we're finished with the move.
@@ -378,12 +378,12 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
     }
     else    // move finished
     {
-      //serial_printf("'Done with long move.\n");
+      //hid_printf("'Done with long move.\n");
       pathmode = PATH_RAMPS_WAITING;
       ramps_endpos = rmove.start_pos + rmove.dir * rmove.x_total;
       *target_pos = ramps_endpos;
       *target_vel = rmove.v_final;
-      //serial_printf("'Done with long move. Last: %f, Current: %f, Next: %f, Time, %lu\n", last_target_pos, *target_pos * rmove.dir + rmove.start_pos, ramps_endpos, get_systick_tenus());
+      //hid_printf("'Done with long move. Last: %f, Current: %f, Next: %f, Time, %lu\n", last_target_pos, *target_pos * rmove.dir + rmove.start_pos, ramps_endpos, get_systick_tenus());
       enter_sync_state();   // tell the stepper module to float the sync line, signaling we're finished with the move.
       return;   // don't need to do the final conversions, and besides, once entering sync_state, the contents of rmove could change on a higher-priority interrupt.
     }
@@ -394,6 +394,6 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
   // check for big change (DEBUG!) //||\\!!
   if(fabsf(*target_pos - last_target_pos) > 1000)
   {
-    serial_printf("'Big change! Last: %f, Next: %f, Time: %lu, t1=%f, t2=%f\n", pathmode, last_target_pos, *target_pos, t, rmove.t1, rmove.t2);
+    hid_printf("'Big change! Last: %f, Next: %f, Time: %lu, t1=%f, t2=%f\n", pathmode, last_target_pos, *target_pos, t, rmove.t1, rmove.t2);
   }
 }

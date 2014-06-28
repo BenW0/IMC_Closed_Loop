@@ -100,7 +100,7 @@ bool step_hook(void) {
     if(parameters.homing & ENABLE_MIN && (((CONTROL_PORT(DIR) & MIN_LIMIT_BIT) ? 1 : 0) != (parameters.homing & INVERT_MIN ? 1 : 0)))
     {
       // the endstop is asserted.
-      serial_printf("'Min Endstop Assert!\n");
+      hid_printf("'Min Endstop Assert!\n");
       
     }
     else
@@ -111,7 +111,7 @@ bool step_hook(void) {
     if(parameters.homing & ENABLE_MAX && (((CONTROL_PORT(DIR) & MAX_LIMIT_BIT) ? 1 : 0) != (parameters.homing & INVERT_MAX ? 1 : 0)))
     {
       // the endstop is asserted.
-      serial_printf("'Max Endstop Assert!\n");
+      hid_printf("'Max Endstop Assert!\n");
       
     }
     else
@@ -188,14 +188,14 @@ bool homing_start_hook()
 {
   old_ctrl_mode = ctrl_get_mode();
   ctrl_enable(CTRL_DISABLED);
-  serial_printf("'Homing Start Hook\n");
+  hid_printf("'Homing Start Hook\n");
   return false;
 }
 void homing_end_hook()
 {
   // set the encoder position.
   set_enc_value((int32_t)((float)get_motor_position() * enc_tics_per_step));
-  serial_printf("'Homing End Hook\n");
+  hid_printf("'Homing End Hook\n");
   // re-enable control.
   ctrl_enable(old_ctrl_mode);
 }

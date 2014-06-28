@@ -18,16 +18,20 @@
 #define __MK20DX256__
 #endif 
 
+#include <usb_desc.h>
+#include <usb_seremu.h>
+
 #include <mk20dx128.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <math.h>
-#include <stdarg.h>
 
-#include <usb_serial.h>
+#include <usb_rawhid.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "rawhid_msg.h"
 
 // This define controls whether to use the QD-input or the SPI-input encoder. Disable
 // to use the SPI-based encoder
@@ -44,7 +48,8 @@ typedef float real;
 // To implement this in other projects, include:
 // SYST_RVR = (F_CPU / 1000) * SYSTICK_UPDATE_MS - 1; //in main
 // and add the systick_isr at the bottom of main. Note the builtin delay() stops working; use
-// delay_real() below. Because imc needs delay(), I have reverted the system to use 1ms updates again.
+// delay_real() below. Because imc needs delay() and usb_rawhid.c uses systick_millis_count, 
+// I have reverted the system to use 1ms updates again.
 #define SYSTICK_UPDATE_TEN_US      100     // Frequency of update for systic timer (default Teensy is 1ms=100)
 extern volatile uint32_t systick_tenus_count;     // millisecond counter which updates every SYSTICK_UPDATE_MS ms.
 extern volatile uint32_t systick_millis_count;
@@ -97,12 +102,6 @@ static inline void delay_0125us(uint32_t tics)
 
 // Random number generator: (lfsr113)
 uint32_t rand_uint32 (void);
-
-// printf to serial port:
-void serial_printf(const char *format, ...);
-
-// everyone uses the "message" variable for compiling strings to be sent to host over serial
-extern char message[200];
 
 
 // The Teensy development tools don't give good access to allow masking of interrupt priorities

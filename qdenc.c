@@ -111,7 +111,7 @@ void ftm2_isr(void)
   uint16_t C0V, C1V;
   int16_t Diff;
 	isr1_count++;
-  usb_serial_write("QEI_isr", 7);
+  //usb_serial_write("QEI_isr", 7);
   if( FTM2_C1SC & FTM_CnSC_CHF_MASK )
   {
      C0V = FTM2_C0V;   //Read to satisfy the dual-channel read-consistency logic
@@ -131,13 +131,13 @@ void ftm2_isr(void)
        Diff = 0;
      if( FTM2_QDCTRL & FTM_QDCTRL_QUADIR_MASK )
      {
-			serial_printf("%u, %u, %u UP\n", C0V, C1V, Diff);
-			usb_serial_write(message,strlen(message));
+			hid_printf("%u, %u, %u UP\n", C0V, C1V, Diff);
+			//usb_serial_write(message,strlen(message));
      }
      else
      {
-			serial_printf("%u, %u, %u DN\n", C0V, C1V, Diff);
-			usb_serial_write(message,strlen(message));
+			hid_printf("%u, %u, %u DN\n", C0V, C1V, Diff);
+			//usb_serial_write(message,strlen(message));
      }
      FTM2_C0SC = /*FTM_CnSC_CHIE_MASK | */FTM_CnSC_MSA_MASK | FTM_CnSC_ELSA_MASK;
      FTM2_C1SC = FTM_CnSC_CHIE_MASK | FTM_CnSC_MSA_MASK | FTM_CnSC_ELSB_MASK;
@@ -146,10 +146,10 @@ void ftm2_isr(void)
   if( FTM2_SC & FTM_SC_TOF_MASK )
   {
      FTM2_SC = FTM_SC_TOIE_MASK | FTM_SC_CLKS(3);
-     if( FTM2_QDCTRL & FTM_QDCTRL_TOFDIR_MASK )
-       usb_serial_write("Overflow UP\n", 12);
-     else
-       usb_serial_write("Overflow DOWN\n", 14);
+     //if( FTM2_QDCTRL & FTM_QDCTRL_TOFDIR_MASK )
+     //  usb_serial_write("Overflow UP\n", 12);
+     //else
+     //  usb_serial_write("Overflow DOWN\n", 14);
   }//We can also add a counter to this to extend the encoder count, BUT edge conditions could read a false pairing
 }
 
@@ -164,13 +164,13 @@ void cpm1_isr(void)
 	isr2_count++;
   if( CMP1_SCR & CMP_SCR_CFR_MASK )
   {
-	serial_printf("%lu rise\n", FTM2_CNT);
-    usb_serial_write(message,strlen(message));
+	  hid_printf("%lu rise\n", FTM2_CNT);
+    //usb_serial_write(message,strlen(message));
   }
   else
   {
-	serial_printf("%lu fall\n", FTM2_CNT);
-    usb_serial_write(message,strlen(message));
+	  hid_printf("%lu fall\n", FTM2_CNT);
+    //usb_serial_write(message,strlen(message));
   }
     
   CMP1_SCR = CMP_SCR_IER_MASK | CMP_SCR_IEF_MASK | CMP_SCR_CFR_MASK | CMP_SCR_CFF_MASK; //Zero-out the Interupt bits
