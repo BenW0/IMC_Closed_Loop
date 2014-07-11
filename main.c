@@ -1213,7 +1213,7 @@ void parse_set_param(const char * buf, uint32_t *i, uint32_t count)
     // stream ctrl history
     parseok = read_int(buf, i, &foo);
     stream_ctrl_hist = (foo != 0);
-    hid_printf("Streaming Set: %i", (int)stream_ctrl_hist);
+    hid_printf("Streaming Set: %i\n", (int)stream_ctrl_hist);
     break;
   case 'p':
     // Path sine mode parameters

@@ -81,9 +81,8 @@ void hid_printf(const char *str, ...)
   va_end(args);
 }
 
-// header specifies a single-byte header to be appended at the start of each
-// packet, and should not be 0 or 1, which are reserved. If this function
-// is called successively with the same header, data is collapsed into as few
+// pack_type specifies the data stream to write on. If this function
+// is called successively with the same packet type, data is collapsed into as few
 // packets as possible. To ensure packets have all been sent, use hid_flush();
 // Returns 1 if successful, 0 if unable to send before timeout. A 0 return may
 // still have sent or cached some of the packet data to be sent in a future packet.
@@ -123,8 +122,8 @@ int hid_write(hid_pack_type pack_type, const uint8_t *data, uint32_t count, uint
     pack[pack_len++] = data[i];
     if(HID_PACKLEN == pack_len)    // packet full!
     {
-      // complete by inserting the length into the packet header
-      pack[0] |= HID_PACKLEN << 2;
+      // complete by inserting the payload length into the packet header
+      pack[0] |= (HID_PACKLEN - 1) << 2;
       if(!hid_write_packet((void *)pack, timeout))
         return 0;
       pack_len = 1;
@@ -160,7 +159,7 @@ int hid_flush(uint32_t timeout)
   // send a partially-full packet.
   vmemset(pack + pack_len, 0, HID_PACKLEN - pack_len);
   // complete the header by adding the packet length
-  pack[0] |= pack_len << 2;
+  pack[0] |= (pack_len - 1) << 2;
 #ifdef USB_RAWHID
   if(usb_rawhid_send(pack, timeout))
 #else

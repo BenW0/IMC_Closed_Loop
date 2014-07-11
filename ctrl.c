@@ -78,6 +78,7 @@ static uint32_t hist_time_offset = 0;
 //static char message[100] = "Hello, World";
 static volatile float last_vel = 0;   // velocity chosen last update
 static volatile int32_t last_encpos = 0.f;
+static volatile uint32_t last_update = 0.f;   // time of last update
 static volatile real last_ctrl_out = 0.f;
 //static volatile real ctrl_integrator = 0.f;   // control integrator variable.
 static volatile real ff_target_pos_buf[FF_TARGETS];
@@ -277,6 +278,11 @@ void pit3_isr(void)
 	// remember, the timer counts down.
 	old_systic = SYST_CVR;
   time_of_update = get_systick_tenus();   // do this just once so we don't change our control if an unknown time elapses between querying position and doing control things
+  //if((int32_t)time_of_update - (int32_t)last_update < 90)
+  //{
+  //  // we have an error!
+  //  hid_printf("Time error! Old: %u, New: %u, syst_cvr: %u\n", last_update, time_of_update, old_systic);
+  //}
 	
 	// Read the encoder position
 	//||\\!! TODO: figure out what happens if the encoder has lost track...
@@ -387,6 +393,7 @@ void pit3_isr(void)
 	
   
   last_encpos = encpos;
+  last_update = time_of_update;
 	
  // __disable_irq();    // keep us from being interrupted for a sec
 	new_systic = SYST_CVR;

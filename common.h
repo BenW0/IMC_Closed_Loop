@@ -51,13 +51,27 @@ typedef float real;
 // and add the systick_isr at the bottom of main. Note the builtin delay() stops working; use
 // delay_real() below. Because imc needs delay() and usb_rawhid.c uses systick_millis_count, 
 // I have reverted the system to use 1ms updates again.
+// If it is having issues with not correctly reporting just when the systick counter is incremented
+// (i.e. get_systic_tenus returns, successively, 97, 98, 99, 0, 100 because systick_millis_count has not been
+// incremented by the systic isr even though CVR has reset), consider using this code:
+  //__disable_irq();
+  //uint32_t cvr = SYST_CVR;
+  //uint32_t cnt = (SYST_RVR - SYST_CVR) * 1000L / (F_CPU / 100L) + // 10*us on the timer now
+  //                systick_millis_count * SYSTICK_UPDATE_TEN_US;   // accumulated 10*us      was systick_tenus_count
+  //__enable_irq();
+  //if(SYST_RVR - cvr < 4)    // counter rollover has occcurred but not been captured by systick_millis_count
+  //  return cnt + SYSTICK_UPDATE_TEN_US;
+  //else
+  //  return cnt;
+// I discovered the hard way that reversing the lines of the cnt = (so we read systick_millis_count before SYST_CVR)
+// results in occasional errors of this kind, but so far the code below seems to be working.
 #define SYSTICK_UPDATE_TEN_US      100     // Frequency of update for systic timer (default Teensy is 1ms=100)
 extern volatile uint32_t systick_tenus_count;     // millisecond counter which updates every SYSTICK_UPDATE_MS ms.
 extern volatile uint32_t systick_millis_count;
 __attribute__ ((always_inline)) inline uint32_t get_systick_tenus(void)
 {
-  return systick_millis_count * SYSTICK_UPDATE_TEN_US +   // accumulated 10*us      was systick_tenus_count
-    (SYST_RVR - SYST_CVR) * 1000L / (F_CPU / 100L);  // 10*us on the timer now
+  return (SYST_RVR - SYST_CVR) * 1000L / (F_CPU / 100L) + // 10*us on the timer now
+                  systick_millis_count * SYSTICK_UPDATE_TEN_US;   // accumulated 10*us      was systick_tenus_count
 }
 // The above hack causes delay() as implemented in util.c to fail. Instead, we'll use one that depends on
 // our enhanced counter. Note that it's accuracy is somewhat reduced due to computations required for 
