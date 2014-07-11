@@ -40,6 +40,7 @@ typedef struct
 // Constants =========================================================================
 #define HIST_SIZE   1600U     // have the history use ~40k of memory.
 #define FF_TARGETS 16        // Feed forward target buffer size. another ring buffer...needs to be a power of 2.
+#define HIST_PACK_TYPE  TX_PACK_TYPE_DATA0     // needs to match the DS_STREAM_HIST constant in scripts.py
 
 // Global Variables ==================================================================
 extern float enc_tics_per_step;
@@ -368,14 +369,6 @@ void pit3_isr(void)
   hist_data[hist_head].pos_error_deriv = pos_error_deriv;
   hist_data[hist_head].cmd_velocity = ctrl_out;
 
-  // write it out right now (testing!)
-  //if(stream_ctrl_hist)
-  //{
-  //  usb_serial_write("$", 1);
-  //  usb_serial_write(hist_data + hist_head, sizeof(hist_data_t));
-  //}
-
-
   // the output was encoder tics per minute; we want that back in motor steps/minute
   ctrl_out = ctrl_out * steps_per_enc_tic;
   // set the new velocity
@@ -402,6 +395,17 @@ void pit3_isr(void)
 		update_time = old_systic - new_systic;
 	else	// counter rolled over
 		update_time = old_systic - new_systic + SYST_RVR;
+  
+  // write it out right now
+  if(stream_ctrl_hist)
+  {
+#ifdef USB_RAWHID
+    hid_write(HIST_PACK_TYPE, (uint8_t *)(hist_data + hist_head), sizeof(hist_data_t), 1);
+#else
+    usb_serial_write("$", 1);
+    usb_serial_write(hist_data + hist_head, sizeof(hist_data_t));
+#endif
+  }
   
 	// reset the PIT timer's cycle time based on how long this took. That's not how PIT timers
   // work; the following code is irrelevant (but taught me something!)

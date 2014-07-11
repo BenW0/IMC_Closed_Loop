@@ -16,6 +16,7 @@
 #define F_CPU  48000000
 #define F_BUS 48000000
 #define __MK20DX256__
+#define USB_RAWHID
 #endif 
 
 #include <usb_desc.h>

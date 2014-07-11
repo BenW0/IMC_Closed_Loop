@@ -144,6 +144,7 @@
 #include "imc/stepper.h"
 #include "imc/parameters.h"
 #include "imc/utils.h"
+#include "imc/peripheral.h"
 
 typedef enum {
   RL_IDLE,
@@ -215,6 +216,8 @@ int main()
   SYST_RVR = (F_CPU / 1000) * (SYSTICK_UPDATE_TEN_US / 100L) - 1;
   systick_millis_count = 0;
 
+  hid_init(read_i2c_address());
+
   //reset_hardware();
   //initialize_stepper_state();
   enc_Init();
@@ -259,7 +262,7 @@ int main()
     if(RL_IMC == runlevel)
       imc_idle();   // IMC main loop
 
-    if(hid_avail() > 0)
+    if(hid_available() > 0)
     {
       parse_usb();
     }
@@ -310,18 +313,18 @@ int get_usb_line(char *dest, uint32_t dest_size)
     if(!count)    // no (complete) packet read; return 0 but keep the partial packet for next time.
       return 0;
 
-    input_buf_len += RAWHID_TX_SIZE;
+    input_buf_len += HID_PACKLEN;
     //hid_printf("Got a packet %02X %02X %02X %02X!\n", usb_input_buffer[0], usb_input_buffer[1], usb_input_buffer[2], usb_input_buffer[3]);
 
     // check for zero characters --> we have a complete command.
-    for(uint32_t i = 0; i < RAWHID_TX_SIZE; i++)
-      if(0 == usb_input_buffer[input_buf_len - RAWHID_TX_SIZE + i])
+    for(uint32_t i = 0; i < HID_PACKLEN; i++)
+      if(0 == usb_input_buffer[input_buf_len - HID_PACKLEN + i])
       {
         // complete string found. Send this off and clear the buffer.
-        memcpy((void*)dest, (void*)usb_input_buffer, min(input_buf_len - RAWHID_TX_SIZE + i + 1, dest_size - 1));
+        memcpy((void*)dest, (void*)usb_input_buffer, min(input_buf_len - HID_PACKLEN + i + 1, dest_size - 1));
         dest[dest_size-1] = 0;    // just in case the input buffer was too long.
         input_buf_len = 0;
-        hid_printf("Got a line: '%s'\n", dest);
+        //hid_printf("Got a line: '%s'\n", dest);
         return 1;
       }
   }
