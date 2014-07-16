@@ -192,4 +192,9 @@ void set_enc_value(int32_t newvalue)
   encoder_offset = newvalue - (int32_t)FTM2_CNT;
 }
 
+bool enc_lost_track(void)
+{
+  return false;   // we don't know if we've lost track with the qd encoder.
+}
+
 #endif

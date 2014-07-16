@@ -86,36 +86,38 @@ void read_enc(void)
 {
   uint32_t time = get_systick_tenus();
   bool rolled = false;
-  if(!read_spi(&readval))
+  uint32_t val, last_val = last_readval;
+  if(!read_spi(&val))
 		{
+      readval = val;
+      last_readval = val;
 			// check for rollover
-			if(readval > ROLLOVER * 3 / 4 && last_readval < ROLLOVER / 4)
+			if(val > ROLLOVER * 3 / 4 && last_val < ROLLOVER / 4)
 			{
 				// rolled over negative
 				rollovers--;
         rolled = true;
 			}
-			else if(readval < ROLLOVER / 4 && last_readval > ROLLOVER * 3 / 4)
+			else if(val < ROLLOVER / 4 && last_val > ROLLOVER * 3 / 4)
 			{
 				// rolled over positive
 				rollovers++;
         rolled = true;
 			}
       // check for high absolute change --> possibility of skipping a step.
-      if(labs((rolled ? ROLLOVER : 0) - labs(last_readval - readval)) > DISP_BEFORE_LOST_TRACK)
+      if(labs((rolled ? ROLLOVER : 0) - labs(last_val - val)) > DISP_BEFORE_LOST_TRACK)
       {
         if(!lost_track)
         {
           hid_printf("'High Enc Change: %u. readval = %u, last_readval = %u, Time change = %u\n", 
-            (unsigned int)labs((rolled ? -ROLLOVER : 0) + labs(last_readval - readval)), 
-            (unsigned int)readval, 
-            (unsigned int)last_readval, 
+            (unsigned int)labs((rolled ? -ROLLOVER : 0) + labs(last_val - val)), 
+            (unsigned int)val, 
+            (unsigned int)last_val, 
             (unsigned int)(time - last_update_tenus));
         }
         lost_track = true;
       }
 
-			last_readval = readval;
 		}
   else
   {
@@ -141,6 +143,11 @@ void set_enc_value(int32_t newvalue)
 {
   offset = newvalue - rollovers * ROLLOVER - (int32_t)readval;
   lost_track = false;
+}
+
+bool enc_lost_track(void)
+{
+  return lost_track;
 }
 
 
@@ -182,7 +189,7 @@ uint8_t read_spi(uint32_t *value)
 	// valid packet if ocf = 1, cof = 0, lin = 0, mag_inc and mag_dec not both 1, parcheck == par.
 	if(!ocf || cof || lin || (mag_inc && mag_dec) || parcheck != par)
   {
-    //||\\!!hid_printf("'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
+    hid_printf("'Lost Track: ocf=%i cof=%i lin=%i mag_inc=%i mag_dec=%i parcheck=%i\n", ocf, cof, lin, mag_inc, mag_dec, (int)(parcheck != par));
     //usb_serial_write(message,strlen(message));
 		return 1;
   }

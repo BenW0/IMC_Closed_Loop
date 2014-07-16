@@ -12,6 +12,8 @@ void enc_Deinit(void);
 uint8_t get_enc_value(volatile int32_t *);
 void set_enc_value(int32_t);
 
+bool enc_lost_track(void);
+
 extern volatile unsigned long isr1_count, isr2_count;
 
 #endif

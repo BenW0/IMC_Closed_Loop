@@ -6,7 +6,7 @@
 
 // comment the following define to bitbang the interface to the encoder instead of using the SPIFIFO module
 // (useful for when SPI is being used for another task)
-//#define ENC_USE_SPIFIFO
+#define ENC_USE_SPIFIFO
 
 #ifndef ENC_USE_SPIFIFO
 // pins to use for serial communications
@@ -49,6 +49,8 @@ void enc_idle(void);
 
 uint8_t get_enc_value(volatile int32_t *);
 void set_enc_value(int32_t);
+
+bool enc_lost_track(void);
 
 #endif
 #endif

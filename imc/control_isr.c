@@ -5,6 +5,8 @@
 #include "control_isr.h"
 #include "parser.h"
 #include <pin_config.h>
+//||\\!! TEMP
+//#include "../common.h"
 
 void portb_isr(void){
   if(SDA_CTRL & ISF){
@@ -37,6 +39,8 @@ void portb_isr(void){
     MAX_LIMIT_CTRL |= ISF;
   }
   if(SYNC_CTRL & ISF){
+    //||\\!! temp
+    //hid_printf("%u-%i sync pin isr. state = %i\n", get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT, st.state);
     switch(st.state){
     case STATE_SYNC:
       {
@@ -44,6 +48,9 @@ void portb_isr(void){
 	timer_value = SYNC_TIMEOUT - PIT_CVAL2; // Figure out how far we've gotten
 	PIT_TCTRL2 &= ~TEN; // Stop counting down
 	parameters.sync_error = timer_value;
+  
+    //||\\!! temp
+    //hid_printf("%u-%i  sync_error = %i\n", get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT, timer_value);
       }
       execute_move();
       break;
@@ -72,6 +79,8 @@ void pit2_isr(void){
   PIT_TCTRL2 &= ~TEN;
 
   if(PIT_LDVAL2 != SYNC_DELAY){
+    //||\\!! temp
+    //hid_printf("%u-%i pit2 timeout\n", get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT);
     // We've timed out and bad things are happening   
     return;//||\\!! FIXME - For debugging I don't want a timeout error, so I am disabling this code!
     st.state = STATE_ERROR;
@@ -79,6 +88,8 @@ void pit2_isr(void){
     stop_motion();
   }else{
     CONTROL_DDR |= SYNC_BIT;
+    //||\\!! temp
+    //hid_printf("%u-%i Sync low\n",get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT);
   }
 }
 
@@ -86,10 +97,14 @@ void trigger_sync_delay(void){
   PIT_TCTRL2 &= TEN; // Stop the timer 
   PIT_LDVAL2 = SYNC_DELAY; // Switch to triggering at the end of our propogation window
   PIT_TCTRL2 |= TEN | TIE; // Start counting down 
+  //||\\!! temp
+  //hid_printf("%u-%i Trigger sync delay\n", get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT);
 }
 void enable_sync_interrupt(void){
   CONTROL_DDR &= ~SYNC_BIT;
   SYNC_CTRL = MUX_GPIO | IRQC_ONE;
+    //||\\!! temp
+    //hid_printf("%u-%i Sync float\n", get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT);
 }
 
 void float_sync_line(void){

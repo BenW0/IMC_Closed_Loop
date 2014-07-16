@@ -27,6 +27,7 @@ static ctrl_mode old_ctrl_mode;       // used in homing to store the old control
 //static char message[100];
 
 // Function Predeclares ==============================================================
+void init_hook();
 bool step_hook();
 bool exec_hook(volatile msg_queue_move_t *);
 
@@ -35,11 +36,20 @@ void homing_end_hook();
 
 
 void init_stepper_hooks(void){
+  set_init_hook(init_hook);
   set_step_hook(step_hook);
   set_execute_hook(exec_hook);
   set_homing_hooks(homing_start_hook, homing_end_hook);
 }
 
+
+// hook on the initialize stepper state function. We need to trap this one because it resets the motor position, which confuses the controller.
+void init_hook(void)
+{
+  // reset the encoder too
+  set_enc_value(0);
+  path_imc((real)0);  // tell path not to go off the deep end.
+}
 
 void set_step_events_per_minute_ctrl(uint32_t steps_per_minute) 
 {

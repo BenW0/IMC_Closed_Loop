@@ -23,6 +23,7 @@
 #include <pin_config.h>
 #include "imc/utils.h"
 #include "imc/stepper.h"
+#include "imc/hardware.h"
 
 // Type Definitions ==================================================================
 typedef struct
@@ -35,12 +36,18 @@ typedef struct
   float target_pos;
   float target_vel;
   int32_t motor_position;
-} hist_data_t;
+  uint8_t flags;
+} __attribute__ ((packed)) hist_data_t;
 
 // Constants =========================================================================
-#define HIST_SIZE   1600U     // have the history use ~40k of memory.
+#define HIST_SIZE   1000U     // have the history use ~40k of memory.
 #define FF_TARGETS 16        // Feed forward target buffer size. another ring buffer...needs to be a power of 2.
 #define HIST_PACK_TYPE  TX_PACK_TYPE_DATA0     // needs to match the DS_STREAM_HIST constant in scripts.py
+
+#define HIST_FLAG_SYNC      0x1
+#define HIST_FLAG_LOSTTRACK 0x2
+#define HIST_FLAG_PIN14     0x4   // just records the value of pin14 for whatever you want to use it for.
+#define HIST_FLAG_PIN17     0x8   // just records the value of pin17 for whatever you want to use it for.
 
 // Global Variables ==================================================================
 extern float enc_tics_per_step;
@@ -122,6 +129,12 @@ void init_ctrl(void)
 	// Controller heartbeat (for checking clock regularity)
 	//GPIOD_PDDR |= (1<<3);
 	//PORTD_PCR3 = STANDARD_OUTPUT;
+
+  // Ctrl Hist records the value of pins 14 and 17 as a flag. I use this sometimes in data analysis for synchronizing axes.
+  GPIOD_PDDR &= ~(1<<1);
+  PORTD_PCR1 = MUX_GPIO;
+  GPIOB_PDDR &= ~(1<<1);
+  PORTB_PCR1 = MUX_GPIO;
 
   // clear the history ringbuffer
   vmemset((void *)hist_data, 0, sizeof(hist_data_t) * HIST_SIZE);
@@ -372,8 +385,14 @@ void pit3_isr(void)
   hist_data[hist_head].target_pos = target_pos;
   hist_data[hist_head].target_vel = target_vel;
   //hist_data[hist_head].velocity = last_vel;
-  hist_data[hist_head].pos_error_deriv = pos_error_deriv;
+  hist_data[hist_head].pos_error_deriv = target_pos; //||\\!! pos_error_deriv;
   hist_data[hist_head].cmd_velocity = ctrl_out;
+  hist_data[hist_head].flags = (CONTROL_PORT(DIR) & SYNC_BIT) ? HIST_FLAG_SYNC : 0;
+  hist_data[hist_head].flags |= enc_lost_track() ? HIST_FLAG_LOSTTRACK : 0;
+  hist_data[hist_head].flags |= (GPIOD_PDIR & 0x2) ? HIST_FLAG_PIN14 : 0;
+  hist_data[hist_head].flags |= (GPIOB_PDIR & 0x2) ? HIST_FLAG_PIN17 : 0;
+  // fill the rest of the flags byte with the first few bits of the ramps move id
+  hist_data[hist_head].flags |= (uint8_t)(path_get_ramps_moveid() & 0xF) << 4;
 
   // the output was encoder tics per minute; we want that back in motor steps/minute
   ctrl_out = ctrl_out * steps_per_enc_tic;

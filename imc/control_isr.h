@@ -2,7 +2,7 @@
 #define control_isr_h
 
 #define SYNC_TIMEOUT 4800000 // sync timeout defaults to 100 ms
-#define SYNC_DELAY 48000 // One MS
+#define SYNC_DELAY 96000 // Two MS
 
 void trigger_sync_delay(void);
 void enable_sync_interrupt(void); 

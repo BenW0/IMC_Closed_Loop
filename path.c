@@ -59,6 +59,7 @@ static uint32_t custom_path_curloc = 0;   // upcoming location in the custom_pat
 static uint32_t custom_path_length = 0;   // length of current custom_path series.
 static uint32_t start_time = 0;    // time we started the current move.
 static real last_target_pos = 0;
+static uint32_t ramps_moveid = 0;   // internal counter of the number of processed ramps moves.
 
 static struct {
   real accel;
@@ -120,15 +121,15 @@ void path_ramps_move(volatile msg_queue_move_t *move)
 
   start_time = get_systick_tenus();   //||\\ Change this later?
 
-  // set up the rmove structure. We will convert everything here into tics and seconds, and scale to
-  // adjust velocities and accelerations depending on how far we actually need to move (for synchronized
-  // motion in more than one axis)
+  // set up the rmove structure. We will convert everything here into tics and seconds, and compute
+  // the move at full scale (without adjusting for the distance just this axis is supposed to move)
+  // then scale according to the actual move length when we're done.
   ratio = (real)fabsf(move->length) / (real)move->total_length;
-  rmove.accel = ratio * (real)move->acceleration * enc_tics_per_step * MIN_PER_TENUS_F * MIN_PER_TENUS_F;   // (steps/min^2) * (tics/step) * (min/tenus)^2
-  rmove.v_init = ratio * (real)move->initial_rate * enc_tics_per_step * MIN_PER_TENUS_F;              // (steps/min) * (tics/step) * (min/tenus)
-  rmove.v_final = ratio * (real)move->final_rate * enc_tics_per_step * MIN_PER_TENUS_F;
-  rmove.v_nom = ratio * (real)move->nominal_rate * enc_tics_per_step * MIN_PER_TENUS_F;
-  rmove.x_total = fabsf((real)move->length) * enc_tics_per_step;
+  rmove.accel = (real)move->acceleration * enc_tics_per_step * MIN_PER_TENUS_F * MIN_PER_TENUS_F;   // (steps/min^2) * (tics/step) * (min/tenus)^2
+  rmove.v_init = (real)move->initial_rate * enc_tics_per_step * MIN_PER_TENUS_F;              // (steps/min) * (tics/step) * (min/tenus)
+  rmove.v_final = (real)move->final_rate * enc_tics_per_step * MIN_PER_TENUS_F;
+  rmove.v_nom = (real)move->nominal_rate * enc_tics_per_step * MIN_PER_TENUS_F;
+  rmove.x_total = (real)move->total_length * enc_tics_per_step;
   rmove.dir = move->length >= 0 ? 1.f : -1.f;
 
   rmove.start_pos = (real)ramps_endpos;      // position defined as "x = 0"
@@ -149,17 +150,33 @@ void path_ramps_move(volatile msg_queue_move_t *move)
     rmove.t1 = (rmove.vp - rmove.v_init) / rmove.accel;
     rmove.t3 = (2 * rmove.vp - rmove.v_init - rmove.v_final) / rmove.accel;
   }
+  
+  // scale everything according to the actual move length in this axis:
+  rmove.accel *= ratio;
+  rmove.vp *= ratio;
+  rmove.v_final *= ratio;
+  rmove.v_init *= ratio;
+  rmove.v_nom *= ratio;
+  rmove.x1 *= ratio;
+  rmove.x2 *= ratio;
+  rmove.x_total *= ratio;
 
-  //hid_printf("accel = %g, v_init = %g, v_final = %g\n\
+//  hid_printf("accel = %g, v_init = %g, v_final = %g\n\
 //v_nom = %g, x_total = %g, dir = %g\n\
 //start_pos = %g t1 = %g, t2 = %g, t3 = %g\n\
 //x1 = %g, x2 = %g, short_move = %i, vp = %g\n",
 //                rmove.accel, rmove.v_init, rmove.v_final,
- //               rmove.v_nom, rmove.x_total, rmove.dir, 
-   //             rmove.start_pos, rmove.t1, rmove.t2, rmove.t3,
-     //           rmove.x1, rmove.x2, rmove.short_move, rmove.vp);
+//                rmove.v_nom, rmove.x_total, rmove.dir, 
+//                rmove.start_pos, rmove.t1, rmove.t2, rmove.t3,
+//                rmove.x1, rmove.x2, rmove.short_move, rmove.vp);
 
   pathmode = PATH_RAMPS_MOVING;
+  ramps_moveid++;
+}
+
+uint32_t path_get_ramps_moveid(void)
+{
+  return ramps_moveid;
 }
 
 void path_custom_clear(void)
@@ -351,10 +368,10 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
     {
       pathmode = PATH_RAMPS_WAITING;
       ramps_endpos = rmove.start_pos + rmove.dir * rmove.x_total;
-      //hid_printf("'Done with short move. Last: %f, Current: %f, Next: %f, Time, %lu\n", last_target_pos, *target_pos * rmove.dir + rmove.start_pos, ramps_endpos, get_systick_tenus());
       *target_pos = ramps_endpos;
-      *target_vel = rmove.v_final;
+      *target_vel = rmove.v_final * TENUS_PER_MIN_F * rmove.dir;
       enter_sync_state();   // tell the stepper module to float the sync line, signaling we're finished with the move.
+      //hid_printf("'Done with short move. Cur Time: %u Move Time: %u\n", get_systick_tenus(), get_systick_tenus() - start_time);
       return;   // don't need to do the final conversions, and besides, once entering sync_state, the contents of rmove could change on a higher-priority interrupt.
     }
   }
@@ -382,9 +399,9 @@ void get_targets_ramps(volatile real *target_pos, volatile real *target_vel, uin
       pathmode = PATH_RAMPS_WAITING;
       ramps_endpos = rmove.start_pos + rmove.dir * rmove.x_total;
       *target_pos = ramps_endpos;
-      *target_vel = rmove.v_final;
-      //hid_printf("'Done with long move. Last: %f, Current: %f, Next: %f, Time, %lu\n", last_target_pos, *target_pos * rmove.dir + rmove.start_pos, ramps_endpos, get_systick_tenus());
+      *target_vel = rmove.v_final * TENUS_PER_MIN_F * rmove.dir;
       enter_sync_state();   // tell the stepper module to float the sync line, signaling we're finished with the move.
+      //hid_printf("'Done with long move. Cur Time: %u Move Time: %u\n", get_systick_tenus(), get_systick_tenus() - start_time);
       return;   // don't need to do the final conversions, and besides, once entering sync_state, the contents of rmove could change on a higher-priority interrupt.
     }
   }

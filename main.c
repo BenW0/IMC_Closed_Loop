@@ -28,8 +28,10 @@
  *    11 <--> PC6 - DOUT
  *    12 <--> PC7 - DIN
  *    13 <--> PC5 - SCK
+ *  14 <--> PD1 - "PIN14" flag on ctrl history data capture. No specific function except to save a pin value at each update.
  *  15 <--> PC0 - Step
  *  16 <--> PB0 - Global sync line
+ *  17 <--> PB1 - "PIN17" flag on ctrl history data capture. No specific function except to save a pin value at each update.
  *  18 <--> PB3 - I2C SDA
  *  19 <--> PB2 - I2C SC
  *  20, 21, 22 <--> PD5, PD6, PC1 - SCK, DIN, CS of bitbanged SPI interface to encoder reader (when spienc.h:ENC_USE_SPIFIFO is not defined)
@@ -289,7 +291,8 @@ int main()
       moving = false;
     }
 #ifndef USE_QD_ENC
-    enc_idle();
+    if(ctrl_get_mode() == CTRL_DISABLED)    // only idle when controller is not running.
+      enc_idle();
 #endif
   }
 }
@@ -387,8 +390,10 @@ void parse_usb(void)
       // turn on a controller, if there isn't one already
       if(ctrl_get_mode() == CTRL_DISABLED && !old_stepper_mode)
         ctrl_enable(CTRL_UNITY);
-      // set path to ramps mode
+      // set path to ramps mode; align stepper and encoder readings
+      set_enc_value(0);
       get_enc_value(&foo2);
+      set_motor_position(foo2 * steps_per_enc_tic);
       path_imc((real)foo2);
 
       enable_stepper();

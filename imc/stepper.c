@@ -10,6 +10,8 @@
 #include "config.h"
 #include "stepper.h"
 #include "utils.h"
+//||\\!! temp
+//#include "../common.h"
 
 static void set_step_events_per_minute(uint32_t); 
 
@@ -33,6 +35,8 @@ volatile uint32_t out_step;
 volatile uint32_t out_dir;
 
 // hooks
+static bool init_hook_set = false;
+static void (*init_hook)(void);
 static bool step_hook_set = false;
 static bool (*step_hook)(void);
 static bool exec_hook_set = false;
@@ -54,6 +58,8 @@ void initialize_stepper_state(void){
   vmemset(&st, 0, sizeof(st));
   current_block = NULL;
   st.state =  STATE_IDLE;
+  if(init_hook_set)
+    init_hook();
 }
 
 // hook registration routines
@@ -66,6 +72,11 @@ void set_execute_hook(bool (*exechook)(volatile msg_queue_move_t *))
 {
   exec_hook = exechook;
   exec_hook_set = true;
+}
+void set_init_hook(void (*inithook)(void))
+{
+  init_hook = inithook;
+  init_hook_set = true;
 }
 
 // Enable power to steppers - deassert stepper disable pin
@@ -122,13 +133,15 @@ bool get_direction(void)
 
 void enter_sync_state(void)
 {
+  // Start counting down on timer 2
+  //||\\!! temp
+  //hid_printf("%u-%i enter_sync_state. Old PIT_LDVAL2 = %u, PIT_CVAL2 = %u\n", get_systick_tenus(), (CONTROL_DDR & SYNC_BIT) ? -1 : CONTROL_PORT(DIR) & SYNC_BIT, PIT_LDVAL2, PIT_CVAL2);
+  PIT_LDVAL2 = SYNC_TIMEOUT;
+  PIT_TCTRL2 |= TEN;
   // Configure the sync line as high-z input with an interrupt on logic one. I've had issues
   // with triggering on the edge...
   st.state = STATE_SYNC;
   enable_sync_interrupt();
-  // Start counting down on timer 2
-  PIT_LDVAL2 = SYNC_TIMEOUT;
-  PIT_TCTRL2 |= TEN;
 }
 
 

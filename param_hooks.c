@@ -5,6 +5,7 @@
 #include "spienc.h"
 #include "imc/parameters.h"
 #include "path.h"
+#include "imc/stepper.h"
 
 
 // Global Variables ===========================================================
@@ -42,11 +43,12 @@ void param_get_hook(volatile msg_get_param_t *msg ,rsp_get_param_t *rsp )
 
 void param_set_hook(volatile msg_set_param_t *msg )
 {
+  int32_t foo;
   switch(msg->param_id)
   {
   case IMC_PARAM_LOCATION :// also set the position of the encoder.
     set_enc_value((int32_t)((float)msg->param_value * enc_tics_per_step));
-    path_imc(msg->param_value * enc_tics_per_step);   // keep the controller from moving us back to where we were.
+    path_imc(get_motor_position() * enc_tics_per_step);   // keep the controller from moving us back to where we were.
     break;
   }
 }
