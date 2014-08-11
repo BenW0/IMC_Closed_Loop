@@ -23,3 +23,4 @@
 *.elf
 
 vsproj/*
+teensy-include/MK20DZ10.h

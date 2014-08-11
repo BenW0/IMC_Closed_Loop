@@ -4,7 +4,7 @@
 #ifndef _SPIFIFO_h_
 #define _SPIFIFO_h_
 
-#include "td-inc/core_pins.h"
+#include <core_pins.h>
 #include <mk20dx128.h>
 #include <stdint.h>
 #include <stdbool.h>

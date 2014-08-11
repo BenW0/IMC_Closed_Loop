@@ -2,7 +2,7 @@ CLOCK = 48000000
 
 TEENSY_PATH = ..
 COMPILER = $(TEENSY_PATH)/hardware/tools/arm-none-eabi/bin
-VENDOR = $(TEENSY_PATH)/hardware/vendor/
+VENDOR = ./teensy-include
 
 
 CPPFLAGS = -Wall -g -Os -mcpu=cortex-m4 -mthumb -nostdlib -MMD -DF_CPU=$(CLOCK) -DUSB_RAWHID -DUSB_VID=null -DUSB_PID=null -DLAYOUT_US_ENGLISH -I$(VENDOR) -D__MK20DX256__

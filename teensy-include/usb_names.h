@@ -28,18 +28,30 @@
  * SOFTWARE.
  */
 
+#ifndef _usb_names_h_
+#define _usb_names_h_
 
-#include "avr_emulation.h"
-#include "SPIFIFO.h"
+// These definitions are intended to allow users to override the default
+// USB manufacturer, product and serial number strings.
 
-uint8_t SPCRemulation::pinout = 0;
+#include <stdint.h>
 
-#ifdef HAS_SPIFIFO
-
-uint8_t SPIFIFOclass::pcs = 0;
-volatile uint8_t * SPIFIFOclass::reg = 0;
-
+#ifdef __cplusplus
+extern "C" {
 #endif
 
+struct usb_string_descriptor_struct {
+	uint8_t bLength;
+	uint8_t bDescriptorType;
+	uint16_t wString[];
+};
 
+extern struct usb_string_descriptor_struct usb_string_manufacturer_name;
+extern struct usb_string_descriptor_struct usb_string_product_name;
+extern struct usb_string_descriptor_struct usb_string_serial_number;
 
+#ifdef __cplusplus
+}
+#endif
+
+#endif
