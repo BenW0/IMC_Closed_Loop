@@ -1,5 +1,5 @@
 # IMC Closed Loop Controller
-This program modifies and extends the original template Intelligent Motor Control code (see <<<IMC ref>>>) to implement closed-loop control on a CNC axis. It is designed to work in tandem with the IMC Master variant of the Marlin 3D printer firmware <<<Ramps Ref>>>, and to be separately controlled by a PC using the Controller Configuration GUI <<<CDG Ref>>>.
+This program modifies and extends the original template Intelligent Motor Control code (see https://github.com/BenW0/IMC-Axis-Simple) to implement closed-loop control on a CNC axis. It is designed to work in tandem with the IMC Master variant of the Marlin 3D printer firmware https://github.com/BenW0/IMC_Master_Marlin, and to be separately controlled by a PC using the Controller Configuration GUI https://github.com/BenW0/Ctrl_Design_GUI. For further details, see https://sites.google.com/site/benweisspublic/projects/imc-closed-loop-control.
 
 # Platform
 This code runs on a PJRC.com Teensy 3.0/3.1. Connections can be found in the Schematic directory, or by looking at the comments in main.c.
